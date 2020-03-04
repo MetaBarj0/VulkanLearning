@@ -13,54 +13,6 @@
 static constexpr int WINDOW_WIDTH = 800;
 static constexpr int WINDOW_HEIGHT = 600;
 
-#ifndef NDEBUG
-#define VULKAN_VALIDATION_ENABLED
-#endif // !NDEBUG
-
-#ifdef VULKAN_VALIDATION_ENABLED
-static const std::vector< const char * > VULKAN_VALIDATION_LAYERS
-{
-  "VK_LAYER_KHRONOS_validation",
-  "VK_LAYER_LUNARG_standard_validation"
-};
-
-static const std::vector< const char * > VULKAN_VALIDATION_EXTENSIONS
-{
-  VK_EXT_DEBUG_UTILS_EXTENSION_NAME
-};
-
-static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback( VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
-                                                     VkDebugUtilsMessageTypeFlagsEXT messageType,
-                                                     const VkDebugUtilsMessengerCallbackDataEXT *pCallbackData,
-                                                     void *pUserData )
-{
-  std::cerr << "validation layer: " << pCallbackData->pMessage << std::endl;
-
-  return VK_FALSE;
-}
-
-static VkResult CreateDebugUtilsMessengerEXT( VkInstance instance,
-                                              const VkDebugUtilsMessengerCreateInfoEXT *pCreateInfo,
-                                              const VkAllocationCallbacks *pAllocator,
-                                              VkDebugUtilsMessengerEXT *pDebugMessenger )
-{
-  auto func = reinterpret_cast< PFN_vkCreateDebugUtilsMessengerEXT >( vkGetInstanceProcAddr( instance, "vkCreateDebugUtilsMessengerEXT" ) );
-
-  if( func != nullptr )
-    return func( instance, pCreateInfo, pAllocator, pDebugMessenger );
-
-  return VK_ERROR_EXTENSION_NOT_PRESENT;
-}
-
-static void DestroyDebugUtilsMessengerEXT( VkInstance instance, VkDebugUtilsMessengerEXT debugMessenger, const VkAllocationCallbacks *pAllocator )
-{
-  auto func = reinterpret_cast< PFN_vkDestroyDebugUtilsMessengerEXT >( vkGetInstanceProcAddr( instance, "vkDestroyDebugUtilsMessengerEXT" ) );
-
-  if( func != nullptr )
-    func( instance, debugMessenger, pAllocator );
-}
-#endif // VULKAN_VALIDATION_ENABLED
-
 class HelloTriangleApplication
 {
 public:
@@ -96,7 +48,9 @@ private:
 
   void setupDebugMessenger()
   {
-#ifdef VULKAN_VALIDATION_ENABLED
+    if( !IsVulkanValidationEnabled() )
+      return;
+
     VkDebugUtilsMessengerCreateInfoEXT createInfos
     {
       .sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT,
@@ -112,7 +66,6 @@ private:
 
     if( CreateDebugUtilsMessengerEXT( vkInstance_, &createInfos, nullptr, &vkDebugMessenger_ ) != VK_SUCCESS )
       throw std::runtime_error{ "Error while setup the debug messenger" };
-#endif // VULKAN_VALIDATION_ENABLED
   }
 
   void appendProductionExtensionsIn( std::vector< const char * > &extensions )
@@ -128,11 +81,12 @@ private:
 
   void appendValidationExtensionsIn( std::vector< const char * > &extensions )
   {
-#ifdef VULKAN_VALIDATION_ENABLED
-    std::for_each( std::cbegin( VULKAN_VALIDATION_EXTENSIONS ),
-                   std::cend( VULKAN_VALIDATION_EXTENSIONS ),
+    if( !IsVulkanValidationEnabled() )
+      return;
+
+    std::for_each( std::cbegin( VulkanValidationExtensions ),
+                   std::cend( VulkanValidationExtensions ),
                    [ &extensions ]( const char *const &extensionName ) mutable { extensions.push_back( extensionName ); } );
-#endif // VULKAN_VALIDATION_ENABLED
   }
 
   auto getEnabledExtensions()
@@ -149,11 +103,12 @@ private:
   {
     std::vector< const char * > enabledLayers;
 
-#ifdef VULKAN_VALIDATION_ENABLED
-    std::for_each( std::cbegin( VULKAN_VALIDATION_LAYERS ),
-                   std::cend( VULKAN_VALIDATION_LAYERS ),
-                   [ &enabledLayers ]( const char *const &layerName ) mutable { enabledLayers.push_back( layerName ); } );
-#endif // VULKAN_VALIDATION_ENABLED
+    if( IsVulkanValidationEnabled() )
+    {
+      std::for_each( std::cbegin( VulkanValidationLayers ),
+                     std::cend( VulkanValidationLayers ),
+                     [ &enabledLayers ]( const char *const &layerName ) mutable { enabledLayers.push_back( layerName ); } );
+    }
 
     return enabledLayers;
   }
@@ -195,7 +150,9 @@ private:
 
   void checkSupportedValidationLayers()
   {
-#ifdef VULKAN_VALIDATION_ENABLED
+    if( !IsVulkanValidationEnabled() )
+      return;
+
     std::uint32_t availableLayerCount = 0u;
 
     if( vkEnumerateInstanceLayerProperties( &availableLayerCount, nullptr ) != VK_SUCCESS )
@@ -206,26 +163,27 @@ private:
     if( vkEnumerateInstanceLayerProperties( &availableLayerCount, instanceLayers.data() ) != VK_SUCCESS )
       throw std::runtime_error{ "Error while querying vulkan instance available layers" };
 
-    std::for_each( std::cbegin( VULKAN_VALIDATION_LAYERS ),
-                   std::cend( VULKAN_VALIDATION_LAYERS ),
+    std::for_each( std::cbegin( VulkanValidationLayers ),
+                   std::cend( VulkanValidationLayers ),
                    [ &instanceLayers ]( std::string_view validationLayer )
-                   {
-                     auto it = std::find_if( std::cbegin( instanceLayers ),
-                                             std::cend( instanceLayers ),
-                                             [ &validationLayer ]( const VkLayerProperties &layerProperties )
-                                             {
-                                               return validationLayer.compare( layerProperties.layerName ) == 0;
-                                             } );
+    {
+      auto it = std::find_if( std::cbegin( instanceLayers ),
+                              std::cend( instanceLayers ),
+                              [ &validationLayer ]( const VkLayerProperties &layerProperties )
+      {
+        return validationLayer.compare( layerProperties.layerName ) == 0;
+      } );
 
-                     if( it == std::cend( instanceLayers ) )
-                       throw std::runtime_error{ "Error while querying for unsupported required validation layer" };
-                   } );
-#endif // VULKAN_VALIDATION_ENABLED
+      if( it == std::cend( instanceLayers ) )
+        throw std::runtime_error{ "Error while querying for unsupported required validation layer" };
+    } );
   }
 
   void checkSupportedValidationExtensions()
   {
-#ifdef VULKAN_VALIDATION_ENABLED
+    if( !IsVulkanValidationEnabled() )
+      return;
+
     std::uint32_t availableExtensionCount = 0u;
 
     if( vkEnumerateInstanceExtensionProperties( nullptr, &availableExtensionCount, nullptr ) != VK_SUCCESS )
@@ -236,21 +194,20 @@ private:
     if( vkEnumerateInstanceExtensionProperties( nullptr, &availableExtensionCount, instanceExtensions.data() ) != VK_SUCCESS )
       throw std::runtime_error{ "Error while querying vulkan instance available extensions" };
 
-    std::for_each( std::cbegin( VULKAN_VALIDATION_EXTENSIONS ),
-                   std::cend( VULKAN_VALIDATION_EXTENSIONS ),
+    std::for_each( std::cbegin( VulkanValidationExtensions ),
+                   std::cend( VulkanValidationExtensions ),
                    [ &instanceExtensions ]( std::string_view validationExtension )
-                   {
-                     auto it = std::find_if( std::cbegin( instanceExtensions ),
-                                             std::cend( instanceExtensions ),
-                                             [ &validationExtension ]( const VkExtensionProperties &extensionProperties )
-                                             {
-                                               return validationExtension.compare( extensionProperties.extensionName ) == 0;
-                                             } );
+    {
+      auto it = std::find_if( std::cbegin( instanceExtensions ),
+                              std::cend( instanceExtensions ),
+                              [ &validationExtension ]( const VkExtensionProperties &extensionProperties )
+      {
+        return validationExtension.compare( extensionProperties.extensionName ) == 0;
+      } );
 
-                     if( it == std::cend( instanceExtensions ) )
-                       throw std::runtime_error{ "Error while querying for unsupported required validation extension" };
-                   } );
-#endif // VULKAN_VALIDATION_ENABLED
+      if( it == std::cend( instanceExtensions ) )
+        throw std::runtime_error{ "Error while querying for unsupported required validation extension" };
+    } );
   }
 
   void mainLoop()
@@ -261,18 +218,79 @@ private:
 
   void cleanup()
   {
-#ifdef VULKAN_VALIDATION_ENABLED
     DestroyDebugUtilsMessengerEXT( vkInstance_, vkDebugMessenger_, nullptr );
-#endif // VULKAN_VALIDATION_ENABLED
     vkDestroyInstance( vkInstance_, nullptr );
     glfwDestroyWindow( window_ );
     glfwTerminate();
   }
 
 private:
+  static constexpr bool IsVulkanValidationEnabled()
+  {
+    return
+#ifndef NDEBUG
+      true;
+#else
+      false;
+#endif // !NDEBUG
+  }
+
+  static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback( VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+                                                       VkDebugUtilsMessageTypeFlagsEXT messageType,
+                                                       const VkDebugUtilsMessengerCallbackDataEXT *pCallbackData,
+                                                       void *pUserData )
+  {
+    if( !IsVulkanValidationEnabled() )
+      return {};
+
+    std::cerr << "validation layer: " << pCallbackData->pMessage << std::endl;
+
+    return VK_FALSE;
+  }
+
+  static VkResult CreateDebugUtilsMessengerEXT( VkInstance instance,
+                                                const VkDebugUtilsMessengerCreateInfoEXT *pCreateInfo,
+                                                const VkAllocationCallbacks *pAllocator,
+                                                VkDebugUtilsMessengerEXT *pDebugMessenger )
+  {
+    if( !IsVulkanValidationEnabled() )
+      return {};
+
+    auto func = reinterpret_cast< PFN_vkCreateDebugUtilsMessengerEXT >( vkGetInstanceProcAddr( instance, "vkCreateDebugUtilsMessengerEXT" ) );
+
+    if( func != nullptr )
+      return func( instance, pCreateInfo, pAllocator, pDebugMessenger );
+
+    return VK_ERROR_EXTENSION_NOT_PRESENT;
+  }
+
+  static void DestroyDebugUtilsMessengerEXT( VkInstance instance, VkDebugUtilsMessengerEXT debugMessenger, const VkAllocationCallbacks *pAllocator )
+  {
+    if( !IsVulkanValidationEnabled() )
+      return;
+
+    auto func = reinterpret_cast< PFN_vkDestroyDebugUtilsMessengerEXT >( vkGetInstanceProcAddr( instance, "vkDestroyDebugUtilsMessengerEXT" ) );
+
+    if( func != nullptr )
+      func( instance, debugMessenger, pAllocator );
+  }
+
+private:
   GLFWwindow *window_;
   VkInstance vkInstance_;
   VkDebugUtilsMessengerEXT vkDebugMessenger_;
+
+private:
+  inline static const std::vector< const char * > VulkanValidationLayers
+  {
+    "VK_LAYER_KHRONOS_validation",
+    "VK_LAYER_LUNARG_standard_validation"
+  };
+
+  inline static const std::vector< const char * > VulkanValidationExtensions
+  {
+    VK_EXT_DEBUG_UTILS_EXTENSION_NAME
+  };
 };
 
 int main()
