@@ -9,6 +9,7 @@
 #include <vector>
 #include <algorithm>
 #include <string_view>
+#include <optional>
 
 static constexpr int WINDOW_WIDTH = 800;
 static constexpr int WINDOW_HEIGHT = 600;
@@ -44,6 +45,63 @@ private:
     checkValidationSupport();
     createInstance();
     setupDebugMessenger();
+    pickPhysicalDevice();
+  }
+
+  void pickPhysicalDevice()
+  {
+    uint32_t deviceCount = 0;
+    vkEnumeratePhysicalDevices( vkInstance_, &deviceCount, nullptr );
+
+    if( deviceCount == 0 )
+      throw std::runtime_error{ "Error when attempting to find GPUs with Vulkan support!" };
+
+    std::vector< VkPhysicalDevice > devices{ deviceCount };
+    vkEnumeratePhysicalDevices( vkInstance_, &deviceCount, devices.data() );
+
+    for( const auto &device : devices )
+      if( isDeviceSuitable( device ) )
+      {
+        vkPhysicalDevice_ = device;
+        break;
+      }
+
+    if( vkPhysicalDevice_ == VK_NULL_HANDLE )
+      throw std::runtime_error( "Error failed to find a suitable GPU!" );
+  }
+
+  bool isDeviceSuitable( VkPhysicalDevice device )
+  {
+    RequiredQueueFamilyIndices requiredIndices = findRequiredQueueFamilies( device );
+
+    return requiredIndices.isComplete();
+  }
+
+  struct RequiredQueueFamilyIndices
+  {
+    std::optional< bool > hasGraphicsQueueFamily;
+
+    constexpr bool isComplete()
+    {
+      return hasGraphicsQueueFamily == true;
+    }
+  };
+
+  RequiredQueueFamilyIndices findRequiredQueueFamilies( VkPhysicalDevice device )
+  {
+    RequiredQueueFamilyIndices indices;
+
+    std::uint32_t queueFamilyCount = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties( device, &queueFamilyCount, nullptr );
+
+    std::vector< VkQueueFamilyProperties > queueFamilies{ queueFamilyCount };
+    vkGetPhysicalDeviceQueueFamilyProperties( device, &queueFamilyCount, queueFamilies.data() );
+
+    for( const auto &queueFamily : queueFamilies )
+      if( queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT )
+        indices.hasGraphicsQueueFamily = true;
+
+    return indices;
   }
 
   void setupDebugMessenger()
@@ -279,6 +337,7 @@ private:
   GLFWwindow *window_;
   VkInstance vkInstance_;
   VkDebugUtilsMessengerEXT vkDebugMessenger_;
+  VkPhysicalDevice vkPhysicalDevice_ = VK_NULL_HANDLE;
 
 private:
   inline static const std::vector< const char * > VulkanValidationLayers
