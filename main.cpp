@@ -46,6 +46,46 @@ private:
     createInstance();
     setupDebugMessenger();
     pickPhysicalDevice();
+    createLogicalDevice();
+  }
+
+  void createLogicalDevice()
+  {
+    RequiredQueueFamilyIndices indices = findRequiredQueueFamilies( vkPhysicalDevice_ );
+
+    VkDeviceQueueCreateInfo queueCreateInfo
+    {
+      .sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
+      .queueFamilyIndex = indices.graphicsQueueFamilyIndex.value(),
+      .queueCount = 1
+    };
+
+    float queuePriority[] = { 1.0f };
+    queueCreateInfo.pQueuePriorities = queuePriority;
+
+    VkPhysicalDeviceFeatures deviceFeatures{};
+
+    VkDeviceCreateInfo deviceCreateInfo
+    {
+      .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+      .queueCreateInfoCount = 1,
+      .pQueueCreateInfos = &queueCreateInfo,
+      .enabledExtensionCount = 0,
+      .pEnabledFeatures = &deviceFeatures
+    };
+
+    if( IsVulkanValidationEnabled() )
+    {
+      deviceCreateInfo.enabledLayerCount = static_cast< std::uint32_t >( VulkanValidationLayers.size() );
+      deviceCreateInfo.ppEnabledLayerNames = VulkanValidationLayers.data();
+    }
+    else
+      deviceCreateInfo.enabledLayerCount = 0;
+
+    if( vkCreateDevice( vkPhysicalDevice_, &deviceCreateInfo, nullptr, &vkLogicalDevice_ ) != VK_SUCCESS )
+      throw std::runtime_error( "Error failed to create logical device!" );
+
+    vkGetDeviceQueue( vkLogicalDevice_, indices.graphicsQueueFamilyIndex.value(), 0, &vkGraphicsQueue_ );
   }
 
   void pickPhysicalDevice()
@@ -79,11 +119,11 @@ private:
 
   struct RequiredQueueFamilyIndices
   {
-    std::optional< bool > hasGraphicsQueueFamily;
+    std::optional< std::uint32_t > graphicsQueueFamilyIndex;
 
     constexpr bool isComplete()
     {
-      return hasGraphicsQueueFamily == true;
+      return graphicsQueueFamilyIndex.has_value();
     }
   };
 
@@ -97,9 +137,14 @@ private:
     std::vector< VkQueueFamilyProperties > queueFamilies{ queueFamilyCount };
     vkGetPhysicalDeviceQueueFamilyProperties( device, &queueFamilyCount, queueFamilies.data() );
 
+    std::uint32_t queueFamilyIndex = 0;
     for( const auto &queueFamily : queueFamilies )
+    {
       if( queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT )
-        indices.hasGraphicsQueueFamily = true;
+        indices.graphicsQueueFamilyIndex = queueFamilyIndex;
+
+      queueFamilyIndex++;
+    }
 
     return indices;
   }
@@ -122,7 +167,7 @@ private:
       .pUserData = nullptr
     };
 
-    if( CreateDebugUtilsMessengerEXT( vkInstance_, &createInfos, nullptr, &vkDebugMessenger_ ) != VK_SUCCESS )
+    if( createDebugUtilsMessengerEXT( vkInstance_, &createInfos, nullptr, &vkDebugMessenger_ ) != VK_SUCCESS )
       throw std::runtime_error{ "Error while setup the debug messenger" };
   }
 
@@ -276,7 +321,8 @@ private:
 
   void cleanup()
   {
-    DestroyDebugUtilsMessengerEXT( vkInstance_, vkDebugMessenger_, nullptr );
+    vkDestroyDevice( vkLogicalDevice_, nullptr );
+    destroyDebugUtilsMessengerEXT( vkInstance_, vkDebugMessenger_, nullptr );
     vkDestroyInstance( vkInstance_, nullptr );
     glfwDestroyWindow( window_ );
     glfwTerminate();
@@ -306,7 +352,7 @@ private:
     return VK_FALSE;
   }
 
-  static VkResult CreateDebugUtilsMessengerEXT( VkInstance instance,
+  static VkResult createDebugUtilsMessengerEXT( VkInstance instance,
                                                 const VkDebugUtilsMessengerCreateInfoEXT *pCreateInfo,
                                                 const VkAllocationCallbacks *pAllocator,
                                                 VkDebugUtilsMessengerEXT *pDebugMessenger )
@@ -322,7 +368,7 @@ private:
     return VK_ERROR_EXTENSION_NOT_PRESENT;
   }
 
-  static void DestroyDebugUtilsMessengerEXT( VkInstance instance, VkDebugUtilsMessengerEXT debugMessenger, const VkAllocationCallbacks *pAllocator )
+  static void destroyDebugUtilsMessengerEXT( VkInstance instance, VkDebugUtilsMessengerEXT debugMessenger, const VkAllocationCallbacks *pAllocator )
   {
     if( !IsVulkanValidationEnabled() )
       return;
@@ -338,6 +384,8 @@ private:
   VkInstance vkInstance_;
   VkDebugUtilsMessengerEXT vkDebugMessenger_;
   VkPhysicalDevice vkPhysicalDevice_ = VK_NULL_HANDLE;
+  VkDevice vkLogicalDevice_;
+  VkQueue vkGraphicsQueue_;
 
 private:
   inline static const std::vector< const char * > VulkanValidationLayers
