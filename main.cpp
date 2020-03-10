@@ -1,3 +1,4 @@
+// https://vulkan-tutorial.com
 #define GLFW_INCLUDE_VULKAN
 
 #include <GLFW/glfw3.h>
@@ -11,9 +12,6 @@
 #include <string_view>
 #include <optional>
 #include <set>
-
-static constexpr int WINDOW_WIDTH = 800;
-static constexpr int WINDOW_HEIGHT = 600;
 
 class HelloTriangleApplication
 {
@@ -35,7 +33,7 @@ private:
     glfwWindowHint( GLFW_CLIENT_API, GLFW_NO_API );
     glfwWindowHint( GLFW_RESIZABLE, GLFW_FALSE );
 
-    window_ = glfwCreateWindow( WINDOW_WIDTH, WINDOW_HEIGHT, "Vulkan", nullptr, nullptr );
+    window_ = glfwCreateWindow( windowWidth_, windowHeight_, "Vulkan", nullptr, nullptr );
 
     if( window_ == nullptr )
       throw std::runtime_error{ "Error when creating GLFW window" };
@@ -49,11 +47,106 @@ private:
     createSurface();
     pickFirstSuitablePhysicalDevice();
     createLogicalDevice();
+    createSwapChain();
+  }
+
+  void createSwapChain()
+  {
+    setupSwapChainSurfaceFormat();
+    setupSwapChainExtent();
+
+    VkPresentModeKHR presentMode = chooseSwapPresentMode();
+    std::uint32_t imageCount = swapChainSupportDetails_.surfaceCapabilities_.minImageCount + 1;
+
+    if( swapChainSupportDetails_.surfaceCapabilities_.maxImageCount > 0 && imageCount > swapChainSupportDetails_.surfaceCapabilities_.maxImageCount )
+      imageCount = swapChainSupportDetails_.surfaceCapabilities_.maxImageCount;
+
+    VkSwapchainCreateInfoKHR createInfo
+    {
+      .sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
+      .surface = surface_,
+      .minImageCount = imageCount,
+      .imageFormat = swapChainSurfaceFormat_.format,
+      .imageColorSpace = swapChainSurfaceFormat_.colorSpace,
+      .imageExtent = swapChainExtent_,
+      .imageArrayLayers = 1,
+      .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+      .preTransform = swapChainSupportDetails_.surfaceCapabilities_.currentTransform,
+      .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
+      .presentMode = presentMode,
+      .clipped = VK_TRUE,
+      .oldSwapchain = VK_NULL_HANDLE
+    };
+
+    uint32_t queueFamilyIndices[]
+    {
+      requiredQueueFamilyIndices_.graphicsQueueFamilyIndex.value(),
+      requiredQueueFamilyIndices_.presentationQueueFamilyIndex.value()
+    };
+
+    if( requiredQueueFamilyIndices_.graphicsQueueFamilyIndex != requiredQueueFamilyIndices_.presentationQueueFamilyIndex )
+    {
+      createInfo.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
+      createInfo.queueFamilyIndexCount = 2;
+      createInfo.pQueueFamilyIndices = queueFamilyIndices;
+    }
+    else
+    {
+      createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+      createInfo.queueFamilyIndexCount = 0; // Optional
+      createInfo.pQueueFamilyIndices = nullptr; // Optional
+    }
+
+    if( vkCreateSwapchainKHR( logicalDevice_, &createInfo, nullptr, &swapChain_ ) != VK_SUCCESS )
+      throw std::runtime_error{ "Error failed to create swap chain!" };
+
+    vkGetSwapchainImagesKHR( logicalDevice_, swapChain_, &imageCount, nullptr );
+    swapChainImages_.resize( imageCount );
+    vkGetSwapchainImagesKHR( logicalDevice_, swapChain_, &imageCount, swapChainImages_.data() );
+  }
+
+  void setupSwapChainSurfaceFormat()
+  {
+    swapChainSurfaceFormat_ = swapChainSupportDetails_.surfaceFormats_.front();
+
+    for( const auto &availableFormat : swapChainSupportDetails_.surfaceFormats_ )
+      if( availableFormat.format == VK_FORMAT_B8G8R8A8_SRGB && availableFormat.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR )
+      {
+        swapChainSurfaceFormat_ = availableFormat;
+        return;
+      }
+  }
+
+  VkPresentModeKHR chooseSwapPresentMode()
+  {
+    for( const auto &availablePresentMode : swapChainSupportDetails_.presentModes_ )
+      if( availablePresentMode == VK_PRESENT_MODE_MAILBOX_KHR )
+        return availablePresentMode;
+
+    return VK_PRESENT_MODE_FIFO_KHR;
+  }
+
+  void setupSwapChainExtent()
+  {
+    const auto &capabilities = swapChainSupportDetails_.surfaceCapabilities_;
+
+    if( capabilities.currentExtent.width != std::numeric_limits< std::uint32_t >::max() )
+    {
+      swapChainExtent_ = capabilities.currentExtent;
+      return;
+    }
+
+    VkExtent2D actualExtent{ windowWidth_, windowHeight_ };
+
+    actualExtent.width = std::max( capabilities.minImageExtent.width, std::min( capabilities.maxImageExtent.width, actualExtent.width ) );
+    actualExtent.height = std::max( capabilities.minImageExtent.height, std::min( capabilities.maxImageExtent.height, actualExtent.height ) );
+
+    swapChainExtent_ = actualExtent;
   }
 
   void createSurface()
   {
-    if( glfwCreateWindowSurface( vkInstance_, window_, nullptr, &vkSurface_ ) != VK_SUCCESS )
+    if( glfwCreateWindowSurface( vulkanInstance_, window_, nullptr, &surface_ ) != VK_SUCCESS )
       throw std::runtime_error{ "Error failed to create window surface!" };
   }
 
@@ -79,52 +172,100 @@ private:
       .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
       .queueCreateInfoCount = static_cast< std::uint32_t >( allQueueCreateInfo.size() ),
       .pQueueCreateInfos = allQueueCreateInfo.data(),
-      .enabledExtensionCount = 0,
+      .enabledExtensionCount = static_cast< std::uint32_t >( vulkanProductionExtensions_.size() ),
+      .ppEnabledExtensionNames = vulkanProductionExtensions_.data(),
       .pEnabledFeatures = &deviceFeatures
     };
 
     if( IsVulkanValidationEnabled() )
     {
-      deviceCreateInfo.enabledLayerCount = static_cast< std::uint32_t >( VulkanValidationLayers.size() );
-      deviceCreateInfo.ppEnabledLayerNames = VulkanValidationLayers.data();
+      deviceCreateInfo.enabledLayerCount = static_cast< std::uint32_t >( vulkanValidationLayers_.size() );
+      deviceCreateInfo.ppEnabledLayerNames = vulkanValidationLayers_.data();
     }
     else
       deviceCreateInfo.enabledLayerCount = 0;
 
-    if( vkCreateDevice( vkPhysicalDevice_, &deviceCreateInfo, nullptr, &vkLogicalDevice_ ) != VK_SUCCESS )
+    if( vkCreateDevice( physicalDevice_, &deviceCreateInfo, nullptr, &logicalDevice_ ) != VK_SUCCESS )
       throw std::runtime_error{ "Error failed to create logical device!" };
 
-    vkGetDeviceQueue( vkLogicalDevice_, requiredQueueFamilyIndices_.graphicsQueueFamilyIndex.value(), 0, &vkGraphicsQueue_ );
-    vkGetDeviceQueue( vkLogicalDevice_, requiredQueueFamilyIndices_.presentationQueueFamilyIndex.value(), 0, &vkPresentationQueue_ );
+    vkGetDeviceQueue( logicalDevice_, requiredQueueFamilyIndices_.graphicsQueueFamilyIndex.value(), 0, &graphicsQueue_ );
+    vkGetDeviceQueue( logicalDevice_, requiredQueueFamilyIndices_.presentationQueueFamilyIndex.value(), 0, &presentationQueue_ );
   }
 
   void pickFirstSuitablePhysicalDevice()
   {
     uint32_t deviceCount = 0;
-    vkEnumeratePhysicalDevices( vkInstance_, &deviceCount, nullptr );
+    vkEnumeratePhysicalDevices( vulkanInstance_, &deviceCount, nullptr );
 
     if( deviceCount == 0 )
       throw std::runtime_error{ "Error when attempting to find GPUs with Vulkan support!" };
 
     std::vector< VkPhysicalDevice > devices{ deviceCount };
-    vkEnumeratePhysicalDevices( vkInstance_, &deviceCount, devices.data() );
+    vkEnumeratePhysicalDevices( vulkanInstance_, &deviceCount, devices.data() );
 
     for( const auto &device : devices )
       if( isPhysicalDeviceSuitable( device ) )
       {
-        vkPhysicalDevice_ = device;
+        physicalDevice_ = device;
         break;
       }
 
-    if( vkPhysicalDevice_ == VK_NULL_HANDLE )
+    if( physicalDevice_ == VK_NULL_HANDLE )
       throw std::runtime_error{ "Error failed to find a suitable GPU!" };
   }
 
   bool isPhysicalDeviceSuitable( VkPhysicalDevice device )
   {
     setupRequiredQueueFamiliesForDevice( device );
+    setupSwapChainSupportForDevice( device );
+    bool extensionsSupported = isDeviceSupportingRequiredExtensions( device );
 
-    return requiredQueueFamilyIndices_.isComplete();
+    return requiredQueueFamilyIndices_.isComplete() && extensionsSupported && swapChainSupportDetails_.isComplete();
+  }
+
+  void setupSwapChainSupportForDevice( VkPhysicalDevice device )
+  {
+    vkGetPhysicalDeviceSurfaceCapabilitiesKHR( device, surface_, &swapChainSupportDetails_.surfaceCapabilities_ );
+
+    std::uint32_t formatCount;
+    vkGetPhysicalDeviceSurfaceFormatsKHR( device, surface_, &formatCount, nullptr );
+
+    if( formatCount != 0 )
+    {
+      swapChainSupportDetails_.surfaceFormats_.resize( formatCount );
+      vkGetPhysicalDeviceSurfaceFormatsKHR( device, surface_, &formatCount, swapChainSupportDetails_.surfaceFormats_.data() );
+    }
+
+    std::uint32_t presentModeCount;
+    vkGetPhysicalDeviceSurfacePresentModesKHR( device, surface_, &presentModeCount, nullptr );
+
+    if( presentModeCount != 0 )
+    {
+      swapChainSupportDetails_.presentModes_.resize( presentModeCount );
+      vkGetPhysicalDeviceSurfacePresentModesKHR( device, surface_, &presentModeCount, swapChainSupportDetails_.presentModes_.data() );
+    }
+  }
+
+  bool isDeviceSupportingRequiredExtensions( VkPhysicalDevice device )
+  {
+    std::uint32_t extensionCount;
+    vkEnumerateDeviceExtensionProperties( device, nullptr, &extensionCount, nullptr );
+
+    std::vector< VkExtensionProperties > availableExtensions( extensionCount );
+    vkEnumerateDeviceExtensionProperties( device, nullptr, &extensionCount, availableExtensions.data() );
+
+    for( std::string_view extension : vulkanProductionExtensions_ )
+    {
+      if( std::find_if( std::cbegin( availableExtensions ),
+                        std::cend( availableExtensions ),
+                        [ &extension ]( const VkExtensionProperties &extensionProperties )
+      {
+        return extension.compare( extensionProperties.extensionName ) == 0;
+      } ) == std::cend( availableExtensions ) )
+        return false;
+    }
+
+    return true;
   }
 
   void setupRequiredQueueFamiliesForDevice( VkPhysicalDevice device )
@@ -142,7 +283,7 @@ private:
         requiredQueueFamilyIndices_.graphicsQueueFamilyIndex = queueFamilyIndex;
 
       VkBool32 hasPresentationSupport = false;
-      vkGetPhysicalDeviceSurfaceSupportKHR( device, queueFamilyIndex, vkSurface_, &hasPresentationSupport );
+      vkGetPhysicalDeviceSurfaceSupportKHR( device, queueFamilyIndex, surface_, &hasPresentationSupport );
 
       if( hasPresentationSupport )
         requiredQueueFamilyIndices_.presentationQueueFamilyIndex = queueFamilyIndex;
@@ -172,7 +313,7 @@ private:
       .pUserData = nullptr
     };
 
-    if( createDebugUtilsMessengerEXT( vkInstance_, &createInfos, nullptr, &vkDebugMessenger_ ) != VK_SUCCESS )
+    if( createDebugUtilsMessengerEXT( vulkanInstance_, &createInfos, nullptr, &debugMessenger_ ) != VK_SUCCESS )
       throw std::runtime_error{ "Error while setup the debug messenger" };
   }
 
@@ -192,8 +333,8 @@ private:
     if( !IsVulkanValidationEnabled() )
       return;
 
-    std::for_each( std::cbegin( VulkanValidationExtensions ),
-                   std::cend( VulkanValidationExtensions ),
+    std::for_each( std::cbegin( vulkanValidationExtensions_ ),
+                   std::cend( vulkanValidationExtensions_ ),
                    [ &extensions ]( const char *const &extensionName ) mutable { extensions.push_back( extensionName ); } );
   }
 
@@ -213,8 +354,8 @@ private:
 
     if( IsVulkanValidationEnabled() )
     {
-      std::for_each( std::cbegin( VulkanValidationLayers ),
-                     std::cend( VulkanValidationLayers ),
+      std::for_each( std::cbegin( vulkanValidationLayers_ ),
+                     std::cend( vulkanValidationLayers_ ),
                      [ &enabledLayers ]( const char *const &layerName ) mutable { enabledLayers.push_back( layerName ); } );
     }
 
@@ -246,7 +387,7 @@ private:
       .ppEnabledExtensionNames = enabledExtensions.data()
     };
 
-    if( vkCreateInstance( &instanceInfo, nullptr, &vkInstance_ ) != VK_SUCCESS )
+    if( vkCreateInstance( &instanceInfo, nullptr, &vulkanInstance_ ) != VK_SUCCESS )
       throw std::runtime_error{ "Error while creating vulkan instance" };
   }
 
@@ -271,18 +412,16 @@ private:
     if( vkEnumerateInstanceLayerProperties( &availableLayerCount, instanceLayers.data() ) != VK_SUCCESS )
       throw std::runtime_error{ "Error while querying vulkan instance available layers" };
 
-    std::for_each( std::cbegin( VulkanValidationLayers ),
-                   std::cend( VulkanValidationLayers ),
+    std::for_each( std::cbegin( vulkanValidationLayers_ ),
+                   std::cend( vulkanValidationLayers_ ),
                    [ &instanceLayers ]( std::string_view validationLayer )
     {
-      auto it = std::find_if( std::cbegin( instanceLayers ),
-                              std::cend( instanceLayers ),
-                              [ &validationLayer ]( const VkLayerProperties &layerProperties )
+      if( std::find_if( std::cbegin( instanceLayers ),
+                        std::cend( instanceLayers ),
+                        [ &validationLayer ]( const VkLayerProperties &layerProperties )
       {
         return validationLayer.compare( layerProperties.layerName ) == 0;
-      } );
-
-      if( it == std::cend( instanceLayers ) )
+      } ) == std::cend( instanceLayers ) )
         throw std::runtime_error{ "Error while querying for unsupported required validation layer" };
     } );
   }
@@ -302,18 +441,16 @@ private:
     if( vkEnumerateInstanceExtensionProperties( nullptr, &availableExtensionCount, instanceExtensions.data() ) != VK_SUCCESS )
       throw std::runtime_error{ "Error while querying vulkan instance available extensions" };
 
-    std::for_each( std::cbegin( VulkanValidationExtensions ),
-                   std::cend( VulkanValidationExtensions ),
+    std::for_each( std::cbegin( vulkanValidationExtensions_ ),
+                   std::cend( vulkanValidationExtensions_ ),
                    [ &instanceExtensions ]( std::string_view validationExtension )
     {
-      auto it = std::find_if( std::cbegin( instanceExtensions ),
-                              std::cend( instanceExtensions ),
-                              [ &validationExtension ]( const VkExtensionProperties &extensionProperties )
+      if( std::find_if( std::cbegin( instanceExtensions ),
+                        std::cend( instanceExtensions ),
+                        [ &validationExtension ]( const VkExtensionProperties &extensionProperties )
       {
         return validationExtension.compare( extensionProperties.extensionName ) == 0;
-      } );
-
-      if( it == std::cend( instanceExtensions ) )
+      } ) == std::cend( instanceExtensions ) )
         throw std::runtime_error{ "Error while querying for unsupported required validation extension" };
     } );
   }
@@ -326,10 +463,11 @@ private:
 
   void cleanup()
   {
-    vkDestroyDevice( vkLogicalDevice_, nullptr );
-    destroyDebugUtilsMessengerEXT( vkInstance_, vkDebugMessenger_, nullptr );
-    vkDestroySurfaceKHR( vkInstance_, vkSurface_, nullptr );
-    vkDestroyInstance( vkInstance_, nullptr );
+    vkDestroySwapchainKHR( logicalDevice_, swapChain_, nullptr );
+    vkDestroyDevice( logicalDevice_, nullptr );
+    destroyDebugUtilsMessengerEXT( vulkanInstance_, debugMessenger_, nullptr );
+    vkDestroySurfaceKHR( vulkanInstance_, surface_, nullptr );
+    vkDestroyInstance( vulkanInstance_, nullptr );
     glfwDestroyWindow( window_ );
     glfwTerminate();
   }
@@ -343,7 +481,7 @@ private:
 #else
       false;
 #endif // !NDEBUG
-  }
+}
 
   static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback( VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
                                                        VkDebugUtilsMessageTypeFlagsEXT messageType,
@@ -407,27 +545,52 @@ private:
     }
   };
 
-private:
-  GLFWwindow *window_;
-  VkInstance vkInstance_;
-  VkDebugUtilsMessengerEXT vkDebugMessenger_;
-  VkSurfaceKHR vkSurface_;
-  VkPhysicalDevice vkPhysicalDevice_ = VK_NULL_HANDLE;
-  VkDevice vkLogicalDevice_;
-  RequiredQueueFamilyIndices requiredQueueFamilyIndices_;
-  VkQueue vkGraphicsQueue_;
-  VkQueue vkPresentationQueue_;
+  struct SwapChainSupportDetails
+  {
+    VkSurfaceCapabilitiesKHR surfaceCapabilities_;
+    std::vector< VkSurfaceFormatKHR > surfaceFormats_;
+    std::vector< VkPresentModeKHR > presentModes_;
+
+    bool isComplete() const noexcept
+    {
+      return !surfaceFormats_.empty() && !presentModes_.empty();
+    }
+  };
 
 private:
-  inline static const std::vector< const char * > VulkanValidationLayers
+  GLFWwindow *window_;
+  VkInstance vulkanInstance_;
+  VkDebugUtilsMessengerEXT debugMessenger_;
+  VkSurfaceKHR surface_;
+  VkPhysicalDevice physicalDevice_;
+  VkDevice logicalDevice_;
+  RequiredQueueFamilyIndices requiredQueueFamilyIndices_;
+  VkQueue graphicsQueue_;
+  VkQueue presentationQueue_;
+  SwapChainSupportDetails swapChainSupportDetails_;
+  VkSwapchainKHR swapChain_;
+  VkSurfaceFormatKHR swapChainSurfaceFormat_;
+  VkExtent2D swapChainExtent_;
+  std::vector< VkImage > swapChainImages_;
+
+private:
+  inline static constexpr int windowWidth_ = 800;
+  inline static constexpr int windowHeight_ = 600;
+
+  inline static const std::vector< const char * > vulkanValidationLayers_
   {
     "VK_LAYER_KHRONOS_validation",
     "VK_LAYER_LUNARG_standard_validation"
   };
 
-  inline static const std::vector< const char * > VulkanValidationExtensions
+  inline static const std::vector< const char * > vulkanValidationExtensions_
   {
     VK_EXT_DEBUG_UTILS_EXTENSION_NAME
+  };
+
+  inline static const std::vector< const char * > vulkanProductionExtensions_
+  {
+    VK_KHR_SWAPCHAIN_EXTENSION_NAME
   };
 };
 
