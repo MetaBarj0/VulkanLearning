@@ -48,6 +48,41 @@ private:
     pickFirstSuitablePhysicalDevice();
     createLogicalDevice();
     createSwapChain();
+    createImageViews();
+  }
+
+  void createImageViews()
+  {
+    swapChainImageViews_.resize( swapChainImages_.size() );
+
+    for( std::size_t i = 0; i < swapChainImages_.size(); ++i )
+    {
+      VkImageViewCreateInfo createInfo
+      {
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image = swapChainImages_[ i ],
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format = swapChainSurfaceFormat_.format,
+        .components
+        {
+          .r = VK_COMPONENT_SWIZZLE_IDENTITY,
+          .g = VK_COMPONENT_SWIZZLE_IDENTITY,
+          .b = VK_COMPONENT_SWIZZLE_IDENTITY,
+          .a = VK_COMPONENT_SWIZZLE_IDENTITY
+        },
+        .subresourceRange
+        {
+          .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+          .baseMipLevel = 0,
+          .levelCount = 1,
+          .baseArrayLayer = 0,
+          .layerCount = 1
+        }
+      };
+
+      if( vkCreateImageView( logicalDevice_, &createInfo, nullptr, &swapChainImageViews_[ i ] ) != VK_SUCCESS )
+        throw std::runtime_error{ "Error failed to create image views!" };
+    }
   }
 
   void createSwapChain()
@@ -463,6 +498,9 @@ private:
 
   void cleanup()
   {
+    for( auto imageView : swapChainImageViews_ )
+      vkDestroyImageView( logicalDevice_, imageView, nullptr );
+
     vkDestroySwapchainKHR( logicalDevice_, swapChain_, nullptr );
     vkDestroyDevice( logicalDevice_, nullptr );
     destroyDebugUtilsMessengerEXT( vulkanInstance_, debugMessenger_, nullptr );
@@ -481,7 +519,7 @@ private:
 #else
       false;
 #endif // !NDEBUG
-}
+  }
 
   static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback( VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
                                                        VkDebugUtilsMessageTypeFlagsEXT messageType,
@@ -572,6 +610,7 @@ private:
   VkSurfaceFormatKHR swapChainSurfaceFormat_;
   VkExtent2D swapChainExtent_;
   std::vector< VkImage > swapChainImages_;
+  std::vector< VkImageView > swapChainImageViews_;
 
 private:
   inline static constexpr int windowWidth_ = 800;
