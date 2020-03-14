@@ -71,6 +71,34 @@ private:
     createImageViews();
     createRenderPass();
     createGraphicsPipeline();
+    createFramebuffers();
+  }
+
+  void createFramebuffers()
+  {
+    swapChainFramebuffers_.resize( swapChainImageViews_.size() );
+
+    for( std::size_t i = 0; i < swapChainImageViews_.size(); i++ )
+    {
+      VkImageView attachments[]
+      {
+        swapChainImageViews_[ i ]
+      };
+
+      VkFramebufferCreateInfo framebufferInfo
+      {
+        .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+        .renderPass = renderPass_,
+        .attachmentCount = 1,
+        .pAttachments = attachments,
+        .width = swapChainExtent_.width,
+        .height = swapChainExtent_.height,
+        .layers = 1
+      };
+
+      if( vkCreateFramebuffer( logicalDevice_, &framebufferInfo, nullptr, &swapChainFramebuffers_[ i ] ) != VK_SUCCESS )
+        throw std::runtime_error{ "failed to create framebuffer!" };
+    }
   }
 
   void createRenderPass()
@@ -761,13 +789,16 @@ private:
 
   void cleanup()
   {
+    for( auto &&framebuffer : swapChainFramebuffers_ )
+      vkDestroyFramebuffer( logicalDevice_, framebuffer, nullptr );
+
     for( auto &&graphicsPipeline : graphicsPipelines_ )
       vkDestroyPipeline( logicalDevice_, graphicsPipeline, nullptr );
 
     vkDestroyPipelineLayout( logicalDevice_, pipelineLayout_, nullptr );
     vkDestroyRenderPass( logicalDevice_, renderPass_, nullptr );
 
-    for( auto imageView : swapChainImageViews_ )
+    for( auto &&imageView : swapChainImageViews_ )
       vkDestroyImageView( logicalDevice_, imageView, nullptr );
 
     vkDestroySwapchainKHR( logicalDevice_, swapChain_, nullptr );
@@ -788,7 +819,7 @@ private:
 #else
       false;
 #endif // !NDEBUG
-}
+  }
 
   static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback( VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
                                                        VkDebugUtilsMessageTypeFlagsEXT messageType,
@@ -903,6 +934,7 @@ private:
   VkRenderPass renderPass_;
   VkPipelineLayout pipelineLayout_;
   std::vector< VkPipeline > graphicsPipelines_;
+  std::vector< VkFramebuffer > swapChainFramebuffers_;
 
 private:
   inline static constexpr int windowWidth_ = 800;
