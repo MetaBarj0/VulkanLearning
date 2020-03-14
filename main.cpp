@@ -48,7 +48,7 @@ private:
   void initWindow()
   {
     if( glfwInit() == GLFW_FALSE )
-      throw std::runtime_error{ "Error when intialize GLFW" };
+      throw std::runtime_error{ "Error when intializing GLFW" };
 
     glfwWindowHint( GLFW_CLIENT_API, GLFW_NO_API );
     glfwWindowHint( GLFW_RESIZABLE, GLFW_FALSE );
@@ -74,6 +74,32 @@ private:
     createFramebuffers();
     createCommandPool();
     createCommandBuffers();
+    createSynchronizationObjects();
+  }
+
+  void createSynchronizationObjects()
+  {
+    VkSemaphoreCreateInfo semaphoreInfo
+    {
+      .sType{ VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO }
+    };
+
+    VkFenceCreateInfo fenceInfo
+    {
+      .sType{ VK_STRUCTURE_TYPE_FENCE_CREATE_INFO },
+      .flags{ VK_FENCE_CREATE_SIGNALED_BIT }
+    };
+
+    imageAvailableSemaphore_.resize( maxFrameInFlight_ );
+    renderFinishedSemaphore_.resize( maxFrameInFlight_ );
+    inFlightFences_.resize( maxFrameInFlight_ );
+    inFlightImageFences_.resize( swapChainImages_.size(), VK_NULL_HANDLE );
+
+    for( std::uint8_t i = 0; i < maxFrameInFlight_; ++i )
+      if( vkCreateSemaphore( logicalDevice_, &semaphoreInfo, nullptr, &imageAvailableSemaphore_[ i ] ) != VK_SUCCESS ||
+          vkCreateSemaphore( logicalDevice_, &semaphoreInfo, nullptr, &renderFinishedSemaphore_[ i ] ) != VK_SUCCESS ||
+          vkCreateFence( logicalDevice_, &fenceInfo, nullptr, &inFlightFences_[ i ] ) != VK_SUCCESS )
+        throw std::runtime_error{ "Error failed to create synchronization objects!" };
   }
 
   void createCommandBuffers()
@@ -103,7 +129,12 @@ private:
       if( vkBeginCommandBuffer( commandBuffers_[ i ], &beginInfo ) != VK_SUCCESS )
         throw std::runtime_error{ "Error failed to begin recording command buffer!" };
 
-      VkClearValue clearColor{ 0.0f, 0.0f, 0.0f, 1.0f };
+      VkClearValue clearColors[]
+      {
+        {
+          0.2f, 0.2f, 0.2f, 1.0f
+        }
+      };
 
       VkRenderPassBeginInfo renderPassInfo
       {
@@ -115,8 +146,8 @@ private:
           .offset{ 0, 0 },
           .extent{ swapChainExtent_ }
         },
-        .clearValueCount{ 1 },
-        .pClearValues{ &clearColor }
+        .clearValueCount{ sizeof( clearColors ) / sizeof( VkClearValue ) },
+        .pClearValues{ clearColors }
       };
 
       vkCmdBeginRenderPass( commandBuffers_[ i ], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE );
@@ -157,7 +188,7 @@ private:
       {
         .sType{ VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO },
         .renderPass{ renderPass_ },
-        .attachmentCount{ 1 },
+        .attachmentCount{ sizeof( attachments ) / sizeof( VkImageView ) },
         .pAttachments{ attachments },
         .width{ swapChainExtent_.width },
         .height{ swapChainExtent_.height },
@@ -171,6 +202,14 @@ private:
 
   void createRenderPass()
   {
+    VkAttachmentReference colorAttachmentReferences[]
+    {
+      {
+        .attachment{ 0 },
+        .layout{ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL }
+      }
+    };
+
     VkAttachmentDescription colorAttachmentDescriptions[]
     {
       {
@@ -185,30 +224,36 @@ private:
       }
     };
 
-    VkAttachmentReference colorAttachmentReferences[]
-    {
-      {
-        .attachment{ 0 },
-        .layout{ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL }
-      }
-    };
-
     VkSubpassDescription subPasses[]
     {
       {
         .pipelineBindPoint{ VK_PIPELINE_BIND_POINT_GRAPHICS },
-        .colorAttachmentCount{ 1 },
+        .colorAttachmentCount{ sizeof( colorAttachmentReferences ) / sizeof( VkAttachmentReference ) },
         .pColorAttachments{ colorAttachmentReferences }
+      }
+    };
+
+    VkSubpassDependency dependencies[]
+    {
+      {
+        .srcSubpass{ VK_SUBPASS_EXTERNAL },
+        .dstSubpass{ 0 },
+        .srcStageMask{ VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT },
+        .dstStageMask{ VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT },
+        .srcAccessMask{ 0 },
+        .dstAccessMask{ VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT }
       }
     };
 
     VkRenderPassCreateInfo renderPassInfo
     {
       .sType{ VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO },
-      .attachmentCount{ 1 },
+      .attachmentCount{ sizeof( colorAttachmentDescriptions ) / sizeof( VkAttachmentDescription ) },
       .pAttachments{ colorAttachmentDescriptions },
-      .subpassCount{ 1 },
-      .pSubpasses{ subPasses }
+      .subpassCount{ sizeof( subPasses ) / sizeof( VkSubpassDescription ) },
+      .pSubpasses{ subPasses },
+      .dependencyCount{ sizeof( dependencies ) / sizeof( VkSubpassDependency ) },
+      .pDependencies{ dependencies }
     };
 
     if( vkCreateRenderPass( logicalDevice_, &renderPassInfo, nullptr, &renderPass_ ) != VK_SUCCESS )
@@ -241,8 +286,6 @@ private:
       .pName{ "main" }
     };
 
-    VkPipelineShaderStageCreateInfo shaderStages[] = { vertexShaderStageInfo, fragmentShaderStageInfo };
-
     VkPipelineVertexInputStateCreateInfo vertexInputInfo
     {
       .sType{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO },
@@ -264,8 +307,8 @@ private:
       {
         .x{ 0.0f },
         .y{ 0.0f },
-        .width{ ( float )swapChainExtent_.width },
-        .height{ ( float )swapChainExtent_.height },
+        .width{ static_cast< float >( swapChainExtent_.width ) },
+        .height{ static_cast< float >( swapChainExtent_.height ) },
         .minDepth{ 0.0f },
         .maxDepth{ 1.0f },
       }
@@ -274,7 +317,7 @@ private:
     VkRect2D scissors[]
     {
       {
-        .offset{ { 0 }, 0 },
+        .offset{ 0, 0 },
         .extent{ swapChainExtent_ }
       }
     };
@@ -282,9 +325,9 @@ private:
     VkPipelineViewportStateCreateInfo viewportState
     {
       .sType{ VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO },
-      .viewportCount{ 1 },
+      .viewportCount{ sizeof( viewports ) / sizeof( VkViewport ) },
       .pViewports{ viewports },
-      .scissorCount{ 1 },
+      .scissorCount{ sizeof( scissors ) / sizeof( VkRect2D ) },
       .pScissors{ scissors },
     };
 
@@ -333,7 +376,7 @@ private:
       .sType{ VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO },
       .logicOpEnable{ VK_FALSE },
       .logicOp{ VK_LOGIC_OP_COPY }, // Optional
-      .attachmentCount{ 1 },
+      .attachmentCount{ sizeof( colorBlendAttachments ) / sizeof( VkPipelineColorBlendAttachmentState ) },
       .pAttachments{ colorBlendAttachments },
       .blendConstants{ 0.0f, 0.0f, 0.0f, 0.0f }
     };
@@ -347,7 +390,7 @@ private:
     VkPipelineDynamicStateCreateInfo dynamicState
     {
       .sType{ VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO },
-      .dynamicStateCount{ 2 },
+      .dynamicStateCount{ sizeof( dynamicStates ) / sizeof( VkDynamicState ) },
       .pDynamicStates{ dynamicStates }
     };
 
@@ -363,11 +406,13 @@ private:
     if( vkCreatePipelineLayout( logicalDevice_, &pipelineLayoutInfo, nullptr, &pipelineLayout_ ) != VK_SUCCESS )
       throw std::runtime_error{ "Error failed to create pipeline layout!" };
 
+    VkPipelineShaderStageCreateInfo shaderStages[] = { vertexShaderStageInfo, fragmentShaderStageInfo };
+
     VkGraphicsPipelineCreateInfo pipelinesInfo[]
     {
       {
         .sType{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO },
-        .stageCount{ 2 },
+        .stageCount{ sizeof( shaderStages ) / sizeof( VkPipelineShaderStageCreateInfo ) },
         .pStages{ shaderStages },
         .pVertexInputState{ &vertexInputInfo },
         .pInputAssemblyState{ &inputAssembly },
@@ -455,6 +500,8 @@ private:
     if( swapChainSupportDetails_.surfaceCapabilities_.maxImageCount > 0 && imageCount > swapChainSupportDetails_.surfaceCapabilities_.maxImageCount )
       imageCount = swapChainSupportDetails_.surfaceCapabilities_.maxImageCount;
 
+    maxFrameInFlight_ = imageCount;
+
     VkSwapchainCreateInfoKHR createInfo
     {
       .sType{ VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR },
@@ -472,14 +519,14 @@ private:
       .oldSwapchain{ VK_NULL_HANDLE }
     };
 
-    uint32_t queueFamilyIndices[]
-    {
-      requiredQueueFamilyIndices_.graphicsQueueFamilyIndex.value(),
-      requiredQueueFamilyIndices_.presentationQueueFamilyIndex.value()
-    };
-
     if( requiredQueueFamilyIndices_.graphicsQueueFamilyIndex != requiredQueueFamilyIndices_.presentationQueueFamilyIndex )
     {
+      uint32_t queueFamilyIndices[]
+      {
+        requiredQueueFamilyIndices_.graphicsQueueFamilyIndex.value(),
+        requiredQueueFamilyIndices_.presentationQueueFamilyIndex.value()
+      };
+
       createInfo.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
       createInfo.queueFamilyIndexCount = 2;
       createInfo.pQueueFamilyIndices = queueFamilyIndices;
@@ -566,6 +613,7 @@ private:
       .sType{ VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO },
       .queueCreateInfoCount{ static_cast< std::uint32_t >( allQueueCreateInfo.size() ) },
       .pQueueCreateInfos{ allQueueCreateInfo.data() },
+      .enabledLayerCount{ 0 },
       .enabledExtensionCount{ static_cast< std::uint32_t >( vulkanProductionExtensions_.size() ) },
       .ppEnabledExtensionNames{ vulkanProductionExtensions_.data() },
       .pEnabledFeatures{ &deviceFeatures }
@@ -576,8 +624,6 @@ private:
       deviceCreateInfo.enabledLayerCount = static_cast< std::uint32_t >( vulkanValidationLayers_.size() );
       deviceCreateInfo.ppEnabledLayerNames = vulkanValidationLayers_.data();
     }
-    else
-      deviceCreateInfo.enabledLayerCount = 0;
 
     if( vkCreateDevice( physicalDevice_, &deviceCreateInfo, nullptr, &logicalDevice_ ) != VK_SUCCESS )
       throw std::runtime_error{ "Error failed to create logical device!" };
@@ -612,6 +658,7 @@ private:
   {
     setupRequiredQueueFamiliesForDevice( device );
     setupSwapChainSupportForDevice( device );
+
     bool extensionsSupported = isDeviceSupportingRequiredExtensions( device );
 
     return requiredQueueFamilyIndices_.isComplete() && extensionsSupported && swapChainSupportDetails_.isComplete();
@@ -724,9 +771,6 @@ private:
 
   void appendValidationExtensionsIn( std::vector< const char * > &extensions )
   {
-    if( !IsVulkanValidationEnabled() )
-      return;
-
     std::for_each( std::cbegin( vulkanValidationExtensions_ ),
                    std::cend( vulkanValidationExtensions_ ),
                    [ &extensions ]( const char *const &extensionName ) mutable { extensions.push_back( extensionName ); } );
@@ -737,7 +781,9 @@ private:
     std::vector< const char *> enabledExtensions;
 
     appendProductionExtensionsIn( enabledExtensions );
-    appendValidationExtensionsIn( enabledExtensions );
+
+    if( IsVulkanValidationEnabled() )
+      appendValidationExtensionsIn( enabledExtensions );
 
     return enabledExtensions;
   }
@@ -747,11 +793,9 @@ private:
     std::vector< const char * > enabledLayers;
 
     if( IsVulkanValidationEnabled() )
-    {
       std::for_each( std::cbegin( vulkanValidationLayers_ ),
                      std::cend( vulkanValidationLayers_ ),
                      [ &enabledLayers ]( const char *const &layerName ) mutable { enabledLayers.push_back( layerName ); } );
-    }
 
     return enabledLayers;
   }
@@ -801,7 +845,7 @@ private:
     if( vkEnumerateInstanceLayerProperties( &availableLayerCount, nullptr ) != VK_SUCCESS )
       throw std::runtime_error{ "Error while counting vulkan instance available layers" };
 
-    std::vector<VkLayerProperties> instanceLayers{ availableLayerCount };
+    std::vector< VkLayerProperties > instanceLayers{ availableLayerCount };
 
     if( vkEnumerateInstanceLayerProperties( &availableLayerCount, instanceLayers.data() ) != VK_SUCCESS )
       throw std::runtime_error{ "Error while querying vulkan instance available layers" };
@@ -852,11 +896,79 @@ private:
   void mainLoop()
   {
     while( glfwWindowShouldClose( window_ ) != GLFW_TRUE )
+    {
       glfwPollEvents();
+      drawFrame();
+    }
+
+    vkDeviceWaitIdle( logicalDevice_ );
+  }
+
+  void drawFrame()
+  {
+    vkWaitForFences( logicalDevice_, 1, &inFlightFences_[ currentFrame_ ], VK_TRUE, std::numeric_limits< std::uint64_t >::max() );
+
+    std::uint32_t imageIndex;
+    vkAcquireNextImageKHR( logicalDevice_,
+                           swapChain_,
+                           std::numeric_limits< std::uint64_t >::max(),
+                           imageAvailableSemaphore_[ currentFrame_ ],
+                           VK_NULL_HANDLE,
+                           &imageIndex );
+
+    // Check if a previous frame is using this image (i.e. there is its fence to wait on)
+    if( inFlightImageFences_[ imageIndex ] != VK_NULL_HANDLE )
+      vkWaitForFences( logicalDevice_, 1, &inFlightImageFences_[ imageIndex ], VK_TRUE, std::numeric_limits< std::uint64_t >::max() );
+
+    // Mark the image as now being in use by this frame
+    inFlightImageFences_[ imageIndex ] = inFlightFences_[ currentFrame_ ];
+
+    vkResetFences( logicalDevice_, 1, &inFlightFences_[ currentFrame_ ] );
+
+    VkSemaphore waitSemaphores[] = { imageAvailableSemaphore_[ currentFrame_ ] };
+    VkPipelineStageFlags waitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+    VkSemaphore signalSemaphores[] = { renderFinishedSemaphore_[ currentFrame_ ] };
+    VkSubmitInfo submitInfo
+    {
+      .sType{ VK_STRUCTURE_TYPE_SUBMIT_INFO },
+      .waitSemaphoreCount{ sizeof( waitSemaphores ) / sizeof( VkSemaphore ) },
+      .pWaitSemaphores{ waitSemaphores },
+      .pWaitDstStageMask{ waitStages },
+      .commandBufferCount{ 1 },
+      .pCommandBuffers{ &commandBuffers_[ imageIndex ] },
+      .signalSemaphoreCount{ sizeof( signalSemaphores ) / sizeof( VkSemaphore ) },
+      .pSignalSemaphores{ signalSemaphores }
+    };
+
+    if( vkQueueSubmit( graphicsQueue_, 1, &submitInfo, inFlightFences_[ currentFrame_ ] ) != VK_SUCCESS )
+      throw std::runtime_error{ "Error failed to submit draw command buffer!" };
+
+    VkSwapchainKHR swapChains[] = { swapChain_ };
+    VkPresentInfoKHR presentInfo
+    {
+      .sType{ VK_STRUCTURE_TYPE_PRESENT_INFO_KHR },
+      .waitSemaphoreCount{ sizeof( signalSemaphores ) / sizeof( VkSemaphore ) },
+      .pWaitSemaphores{ signalSemaphores },
+      .swapchainCount{ sizeof( swapChains ) / sizeof( VkSwapchainKHR ) },
+      .pSwapchains{ swapChains },
+      .pImageIndices{ &imageIndex },
+      .pResults{ nullptr } // Optional
+    };
+
+    vkQueuePresentKHR( presentationQueue_, &presentInfo );
+
+    currentFrame_ = ( currentFrame_ + 1 ) % maxFrameInFlight_;
   }
 
   void cleanup()
   {
+    for( std::uint8_t i = 0; i < maxFrameInFlight_; ++i )
+    {
+      vkDestroySemaphore( logicalDevice_, renderFinishedSemaphore_[ i ], nullptr );
+      vkDestroySemaphore( logicalDevice_, imageAvailableSemaphore_[ i ], nullptr );
+      vkDestroyFence( logicalDevice_, inFlightFences_[ i ], nullptr );
+    }
+
     vkDestroyCommandPool( logicalDevice_, commandPool_, nullptr );
 
     for( auto &&framebuffer : swapChainFramebuffers_ )
@@ -884,12 +996,12 @@ private:
   static constexpr bool IsVulkanValidationEnabled()
   {
     return
-#ifndef NDEBUG
-      true;
-#else
+#ifdef NDEBUG
       false;
-#endif // !NDEBUG
-}
+#else
+      true;
+#endif // NDEBUG
+  }
 
   static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback( VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
                                                        VkDebugUtilsMessageTypeFlagsEXT messageType,
@@ -1007,10 +1119,16 @@ private:
   std::vector< VkFramebuffer > swapChainFramebuffers_;
   VkCommandPool commandPool_;
   std::vector< VkCommandBuffer > commandBuffers_;
+  std::vector< VkSemaphore > imageAvailableSemaphore_;
+  std::vector< VkSemaphore > renderFinishedSemaphore_;
+  std::uint8_t currentFrame_{ 0 };
+  std::vector< VkFence > inFlightFences_;
+  std::vector< VkFence > inFlightImageFences_;
+  std::uint8_t maxFrameInFlight_{ 0 };
 
 private:
-  inline static constexpr int windowWidth_ = 800;
-  inline static constexpr int windowHeight_ = 600;
+  inline static constexpr int windowWidth_{ 800 };
+  inline static constexpr int windowHeight_{ 600 };
 
   inline static const std::vector< const char * > vulkanValidationLayers_
   {
