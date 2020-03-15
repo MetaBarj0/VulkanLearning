@@ -14,27 +14,12 @@
 #include <set>
 #include <fstream>
 #include <filesystem>
+#include <tuple>
 
 class HelloTriangleApplication
 {
 public:
-  HelloTriangleApplication( std::filesystem::path path ) :
-    applicationPath_{ path },
-    window_{},
-    vulkanInstance_{},
-    debugMessenger_{},
-    surface_{},
-    physicalDevice_{},
-    logicalDevice_{},
-    requiredQueueFamilyIndices_{},
-    graphicsQueue_{},
-    presentationQueue_{},
-    swapChainSupportDetails_{},
-    swapChain_{},
-    swapChainSurfaceFormat_{},
-    swapChainExtent_{},
-    swapChainImages_{},
-    swapChainImageViews_{} {}
+  HelloTriangleApplication( std::filesystem::path path ) : applicationPath_{ path } {}
 
   void run()
   {
@@ -51,12 +36,16 @@ private:
       throw std::runtime_error{ "Error when intializing GLFW" };
 
     glfwWindowHint( GLFW_CLIENT_API, GLFW_NO_API );
-    glfwWindowHint( GLFW_RESIZABLE, GLFW_FALSE );
+    glfwWindowHint( GLFW_RESIZABLE, GLFW_TRUE );
 
     window_ = glfwCreateWindow( windowWidth_, windowHeight_, "Vulkan", nullptr, nullptr );
 
     if( window_ == nullptr )
       throw std::runtime_error{ "Error when creating GLFW window" };
+
+    glfwSetWindowUserPointer( window_, this );
+
+    glfwSetFramebufferSizeCallback( window_, framebufferResizeCallback );
   }
 
   void initVulkan()
@@ -70,11 +59,40 @@ private:
     createSwapChain();
     createImageViews();
     createRenderPass();
-    createGraphicsPipeline();
+    createGraphicPipeline();
     createFramebuffers();
     createCommandPool();
     createCommandBuffers();
     createSynchronizationObjects();
+  }
+
+  void recreateSwapChain()
+  {
+    handleMinimizedWindow();
+
+    vkDeviceWaitIdle( logicalDevice_ );
+
+    cleanupSwapChain();
+
+    setupSwapChainSupportForPhysicalDevice( physicalDevice_ );
+    createSwapChain();
+    createImageViews();
+    createRenderPass();
+    createGraphicPipeline();
+    createFramebuffers();
+    createCommandBuffers();
+  }
+
+  void handleMinimizedWindow()
+  {
+    int width{}, height{};
+
+    glfwGetFramebufferSize( window_, &width, &height );
+
+    while( width == 0 || height == 0 ) {
+      glfwGetFramebufferSize( window_, &width, &height );
+      glfwWaitEvents();
+    }
   }
 
   void createSynchronizationObjects()
@@ -102,7 +120,7 @@ private:
         throw std::runtime_error{ "Error failed to create synchronization objects!" };
   }
 
-  void createCommandBuffers()
+  void allocateCommandBuffers()
   {
     commandBuffers_.resize( swapChainFramebuffers_.size() );
 
@@ -116,6 +134,11 @@ private:
 
     if( vkAllocateCommandBuffers( logicalDevice_, &allocInfo, commandBuffers_.data() ) != VK_SUCCESS )
       throw std::runtime_error{ "Error failed to allocate command buffers!" };
+  }
+
+  void createCommandBuffers()
+  {
+    allocateCommandBuffers();
 
     for( std::size_t i = 0; i < commandBuffers_.size(); i++ )
     {
@@ -151,7 +174,7 @@ private:
       };
 
       vkCmdBeginRenderPass( commandBuffers_[ i ], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE );
-      vkCmdBindPipeline( commandBuffers_[ i ], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipelines_.front() );
+      vkCmdBindPipeline( commandBuffers_[ i ], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicPipelines_.front() );
       vkCmdDraw( commandBuffers_[ i ], 3, 1, 0, 0 );
       vkCmdEndRenderPass( commandBuffers_[ i ] );
 
@@ -260,31 +283,35 @@ private:
       throw std::runtime_error{ "Error failed to create render pass!" };
   }
 
-  void createGraphicsPipeline()
+  auto getShaderModules()
   {
     auto shadersDirectory = applicationPath_.parent_path() / "shaders";
 
     auto vertexShaderCode = loadShaderModule( shadersDirectory / "vert.spv" );
     auto fragmentShaderCode = loadShaderModule( shadersDirectory / "frag.spv" );
 
-    VkShaderModule vertexShaderModule = createShaderModule( std::move( vertexShaderCode ) );
-    VkShaderModule fragmentShaderModule = createShaderModule( std::move( fragmentShaderCode ) );
+    return std::make_tuple( createShaderModule( std::move( vertexShaderCode ) ),
+                            createShaderModule( std::move( fragmentShaderCode ) ) );
+  }
 
-    VkPipelineShaderStageCreateInfo vertexShaderStageInfo
+  void createGraphicPipelineLayout()
+  {
+    VkPipelineLayoutCreateInfo pipelineLayoutInfo
     {
-      .sType{ VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO },
-      .stage{ VK_SHADER_STAGE_VERTEX_BIT },
-      .module{ vertexShaderModule },
-      .pName{ "main" }
+      .sType{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO },
+      .setLayoutCount{ 0 }, // Optional
+      .pSetLayouts{ nullptr }, // Optional
+      .pushConstantRangeCount{ 0 }, // Optional
+      .pPushConstantRanges{ nullptr }, // Optional
     };
 
-    VkPipelineShaderStageCreateInfo fragmentShaderStageInfo
-    {
-      .sType{ VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO },
-      .stage{ VK_SHADER_STAGE_FRAGMENT_BIT },
-      .module{ fragmentShaderModule },
-      .pName{ "main" }
-    };
+    if( vkCreatePipelineLayout( logicalDevice_, &pipelineLayoutInfo, nullptr, &pipelineLayout_ ) != VK_SUCCESS )
+      throw std::runtime_error{ "Error failed to create pipeline layout!" };
+  }
+
+  void createGraphicPipeline()
+  {
+    createGraphicPipelineLayout();
 
     VkPipelineVertexInputStateCreateInfo vertexInputInfo
     {
@@ -381,30 +408,23 @@ private:
       .blendConstants{ 0.0f, 0.0f, 0.0f, 0.0f }
     };
 
-    VkDynamicState dynamicStates[]
+    auto [vertexShaderModule, fragmentShaderModule] = getShaderModules();
+
+    VkPipelineShaderStageCreateInfo vertexShaderStageInfo
     {
-      VK_DYNAMIC_STATE_VIEWPORT,
-      VK_DYNAMIC_STATE_LINE_WIDTH
+      .sType{ VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO },
+      .stage{ VK_SHADER_STAGE_VERTEX_BIT },
+      .module{ vertexShaderModule },
+      .pName{ "main" }
     };
 
-    VkPipelineDynamicStateCreateInfo dynamicState
+    VkPipelineShaderStageCreateInfo fragmentShaderStageInfo
     {
-      .sType{ VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO },
-      .dynamicStateCount{ sizeof( dynamicStates ) / sizeof( VkDynamicState ) },
-      .pDynamicStates{ dynamicStates }
+      .sType{ VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO },
+      .stage{ VK_SHADER_STAGE_FRAGMENT_BIT },
+      .module{ fragmentShaderModule },
+      .pName{ "main" }
     };
-
-    VkPipelineLayoutCreateInfo pipelineLayoutInfo
-    {
-      .sType{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO },
-      .setLayoutCount{ 0 }, // Optional
-      .pSetLayouts{ nullptr }, // Optional
-      .pushConstantRangeCount{ 0 }, // Optional
-      .pPushConstantRanges{ nullptr }, // Optional
-    };
-
-    if( vkCreatePipelineLayout( logicalDevice_, &pipelineLayoutInfo, nullptr, &pipelineLayout_ ) != VK_SUCCESS )
-      throw std::runtime_error{ "Error failed to create pipeline layout!" };
 
     VkPipelineShaderStageCreateInfo shaderStages[] = { vertexShaderStageInfo, fragmentShaderStageInfo };
 
@@ -430,9 +450,9 @@ private:
       }
     };
 
-    graphicsPipelines_.resize( sizeof( pipelinesInfo ) / sizeof( VkGraphicsPipelineCreateInfo ) );
+    graphicPipelines_.resize( sizeof( pipelinesInfo ) / sizeof( VkGraphicsPipelineCreateInfo ) );
 
-    if( vkCreateGraphicsPipelines( logicalDevice_, VK_NULL_HANDLE, 1, pipelinesInfo, nullptr, graphicsPipelines_.data() ) != VK_SUCCESS )
+    if( vkCreateGraphicsPipelines( logicalDevice_, VK_NULL_HANDLE, 1, pipelinesInfo, nullptr, graphicPipelines_.data() ) != VK_SUCCESS )
       throw std::runtime_error{ "Error failed to create graphics pipeline!" };
 
     vkDestroyShaderModule( logicalDevice_, fragmentShaderModule, nullptr );
@@ -489,6 +509,28 @@ private:
     }
   }
 
+  void setupSwapChainImageSharingMode( VkSwapchainCreateInfoKHR &createInfo )
+  {
+    uint32_t queueFamilyIndices[]
+    {
+      requiredQueueFamilyIndices_.graphicsQueueFamilyIndex.value(),
+      requiredQueueFamilyIndices_.presentationQueueFamilyIndex.value()
+    };
+
+    if( requiredQueueFamilyIndices_.graphicsQueueFamilyIndex != requiredQueueFamilyIndices_.presentationQueueFamilyIndex )
+    {
+      createInfo.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
+      createInfo.queueFamilyIndexCount = 2;
+      createInfo.pQueueFamilyIndices = queueFamilyIndices;
+    }
+    else
+    {
+      createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+      createInfo.queueFamilyIndexCount = 0; // Optional
+      createInfo.pQueueFamilyIndices = nullptr; // Optional
+    }
+  }
+
   void createSwapChain()
   {
     setupSwapChainSurfaceFormat();
@@ -500,7 +542,8 @@ private:
     if( swapChainSupportDetails_.surfaceCapabilities_.maxImageCount > 0 && imageCount > swapChainSupportDetails_.surfaceCapabilities_.maxImageCount )
       imageCount = swapChainSupportDetails_.surfaceCapabilities_.maxImageCount;
 
-    maxFrameInFlight_ = imageCount;
+    // use all the swap chain capacity, dunno if it is a good idea yet
+    maxFrameInFlight_ = swapChainSupportDetails_.surfaceCapabilities_.maxImageCount;
 
     VkSwapchainCreateInfoKHR createInfo
     {
@@ -519,24 +562,7 @@ private:
       .oldSwapchain{ VK_NULL_HANDLE }
     };
 
-    if( requiredQueueFamilyIndices_.graphicsQueueFamilyIndex != requiredQueueFamilyIndices_.presentationQueueFamilyIndex )
-    {
-      uint32_t queueFamilyIndices[]
-      {
-        requiredQueueFamilyIndices_.graphicsQueueFamilyIndex.value(),
-        requiredQueueFamilyIndices_.presentationQueueFamilyIndex.value()
-      };
-
-      createInfo.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
-      createInfo.queueFamilyIndexCount = 2;
-      createInfo.pQueueFamilyIndices = queueFamilyIndices;
-    }
-    else
-    {
-      createInfo.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-      createInfo.queueFamilyIndexCount = 0; // Optional
-      createInfo.pQueueFamilyIndices = nullptr; // Optional
-    }
+    setupSwapChainImageSharingMode( createInfo );
 
     if( vkCreateSwapchainKHR( logicalDevice_, &createInfo, nullptr, &swapChain_ ) != VK_SUCCESS )
       throw std::runtime_error{ "Error failed to create swap chain!" };
@@ -577,7 +603,10 @@ private:
       return;
     }
 
-    VkExtent2D actualExtent{ windowWidth_, windowHeight_ };
+    int currentWindowWidth, currentWindowHeight;
+    glfwGetFramebufferSize( window_, &currentWindowWidth, &currentWindowHeight );
+
+    VkExtent2D actualExtent{ static_cast< std::uint32_t >( currentWindowWidth ), static_cast< std::uint32_t >( currentWindowHeight ) };
 
     actualExtent.width = std::max( capabilities.minImageExtent.width, std::min( capabilities.maxImageExtent.width, actualExtent.width ) );
     actualExtent.height = std::max( capabilities.minImageExtent.height, std::min( capabilities.maxImageExtent.height, actualExtent.height ) );
@@ -602,7 +631,7 @@ private:
                                        {
                                          .sType{ VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO },
                                          .queueFamilyIndex{ queueFamilyIndex },
-                                         .queueCount{ 1 },
+                                         .queueCount{ 1 }, // as today
                                          .pQueuePriorities{ queuePriorities }
                                        } );
 
@@ -656,15 +685,15 @@ private:
 
   bool isPhysicalDeviceSuitable( VkPhysicalDevice device )
   {
-    setupRequiredQueueFamiliesForDevice( device );
-    setupSwapChainSupportForDevice( device );
+    setupRequiredQueueFamiliesForPhysicalDevice( device );
+    setupSwapChainSupportForPhysicalDevice( device );
 
-    bool extensionsSupported = isDeviceSupportingRequiredExtensions( device );
-
-    return requiredQueueFamilyIndices_.isComplete() && extensionsSupported && swapChainSupportDetails_.isComplete();
+    return ( requiredQueueFamilyIndices_.isComplete()
+             && isDeviceSupportingRequiredExtensions( device )
+             && swapChainSupportDetails_.isComplete() );
   }
 
-  void setupSwapChainSupportForDevice( VkPhysicalDevice device )
+  void setupSwapChainSupportForPhysicalDevice( VkPhysicalDevice device )
   {
     vkGetPhysicalDeviceSurfaceCapabilitiesKHR( device, surface_, &swapChainSupportDetails_.surfaceCapabilities_ );
 
@@ -709,7 +738,7 @@ private:
     return true;
   }
 
-  void setupRequiredQueueFamiliesForDevice( VkPhysicalDevice device )
+  void setupRequiredQueueFamiliesForPhysicalDevice( VkPhysicalDevice device )
   {
     std::uint32_t queueFamilyCount = 0;
     vkGetPhysicalDeviceQueueFamilyProperties( device, &queueFamilyCount, nullptr );
@@ -766,7 +795,8 @@ private:
     if( rawGlfwExtensions == nullptr )
       throw std::runtime_error{ "Error while querying glfw required vulkan extensions" };
 
-    extensions.assign( rawGlfwExtensions, rawGlfwExtensions + glfwExtensionCount );
+    for( std::size_t i = 0; i < glfwExtensionCount; ++i )
+      extensions.push_back( rawGlfwExtensions[ i ] );
   }
 
   void appendValidationExtensionsIn( std::vector< const char * > &extensions )
@@ -904,30 +934,69 @@ private:
     vkDeviceWaitIdle( logicalDevice_ );
   }
 
-  void drawFrame()
+  void synchronizeFrames( std::uint32_t imageIndex )
   {
-    vkWaitForFences( logicalDevice_, 1, &inFlightFences_[ currentFrame_ ], VK_TRUE, std::numeric_limits< std::uint64_t >::max() );
-
-    std::uint32_t imageIndex;
-    vkAcquireNextImageKHR( logicalDevice_,
-                           swapChain_,
-                           std::numeric_limits< std::uint64_t >::max(),
-                           imageAvailableSemaphore_[ currentFrame_ ],
-                           VK_NULL_HANDLE,
-                           &imageIndex );
-
     // Check if a previous frame is using this image (i.e. there is its fence to wait on)
     if( inFlightImageFences_[ imageIndex ] != VK_NULL_HANDLE )
       vkWaitForFences( logicalDevice_, 1, &inFlightImageFences_[ imageIndex ], VK_TRUE, std::numeric_limits< std::uint64_t >::max() );
 
     // Mark the image as now being in use by this frame
     inFlightImageFences_[ imageIndex ] = inFlightFences_[ currentFrame_ ];
+  }
 
-    vkResetFences( logicalDevice_, 1, &inFlightFences_[ currentFrame_ ] );
+  auto acquireNextImage()
+  {
+    std::uint32_t imageIndex{};
+    auto acquireNextResult = vkAcquireNextImageKHR( logicalDevice_,
+                                                    swapChain_,
+                                                    std::numeric_limits< std::uint64_t >::max(),
+                                                    imageAvailableSemaphore_[ currentFrame_ ],
+                                                    VK_NULL_HANDLE,
+                                                    &imageIndex );
 
-    VkSemaphore waitSemaphores[] = { imageAvailableSemaphore_[ currentFrame_ ] };
+    if( acquireNextResult == VK_ERROR_OUT_OF_DATE_KHR )
+    {
+      recreateSwapChain();
+      return imageIndex;
+    }
+    else if( acquireNextResult != VK_SUCCESS && acquireNextResult != VK_SUBOPTIMAL_KHR )
+      throw std::runtime_error{ "Error failed to acquire swap chain image!" };
+
+    synchronizeFrames( imageIndex );
+
+    return imageIndex;
+  }
+
+  template< std::size_t N >
+  void submitPresentationQueue( std::uint32_t imageIndex, const VkSemaphore( &signalSemaphores )[ N ] )
+  {
+    VkSwapchainKHR swapChains[] = { swapChain_ };
+    VkPresentInfoKHR presentInfo
+    {
+      .sType{ VK_STRUCTURE_TYPE_PRESENT_INFO_KHR },
+      .waitSemaphoreCount{ sizeof( signalSemaphores ) / sizeof( VkSemaphore ) },
+      .pWaitSemaphores{ signalSemaphores },
+      .swapchainCount{ sizeof( swapChains ) / sizeof( VkSwapchainKHR ) },
+      .pSwapchains{ swapChains },
+      .pImageIndices{ &imageIndex },
+      .pResults{ nullptr } // Optional
+    };
+
+    auto presentResult = vkQueuePresentKHR( presentationQueue_, &presentInfo );
+
+    if( presentResult == VK_ERROR_OUT_OF_DATE_KHR || presentResult == VK_SUBOPTIMAL_KHR || framebufferResized_ )
+    {
+      framebufferResized_ = false;
+      recreateSwapChain();
+    }
+    else if( presentResult != VK_SUCCESS )
+      throw std::runtime_error{ "Error failed to present swap chain image!" };
+  }
+
+  template< std::size_t N1, std::size_t N2 >
+  void submitGraphicQueue( std::uint32_t imageIndex, const VkSemaphore( &waitSemaphores )[ N1 ], const VkSemaphore( &signalSemaphores )[ N2 ] )
+  {
     VkPipelineStageFlags waitStages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
-    VkSemaphore signalSemaphores[] = { renderFinishedSemaphore_[ currentFrame_ ] };
     VkSubmitInfo submitInfo
     {
       .sType{ VK_STRUCTURE_TYPE_SUBMIT_INFO },
@@ -942,39 +1011,33 @@ private:
 
     if( vkQueueSubmit( graphicsQueue_, 1, &submitInfo, inFlightFences_[ currentFrame_ ] ) != VK_SUCCESS )
       throw std::runtime_error{ "Error failed to submit draw command buffer!" };
+  }
 
-    VkSwapchainKHR swapChains[] = { swapChain_ };
-    VkPresentInfoKHR presentInfo
-    {
-      .sType{ VK_STRUCTURE_TYPE_PRESENT_INFO_KHR },
-      .waitSemaphoreCount{ sizeof( signalSemaphores ) / sizeof( VkSemaphore ) },
-      .pWaitSemaphores{ signalSemaphores },
-      .swapchainCount{ sizeof( swapChains ) / sizeof( VkSwapchainKHR ) },
-      .pSwapchains{ swapChains },
-      .pImageIndices{ &imageIndex },
-      .pResults{ nullptr } // Optional
-    };
+  void drawFrame()
+  {
+    vkWaitForFences( logicalDevice_, 1, &inFlightFences_[ currentFrame_ ], VK_TRUE, std::numeric_limits< std::uint64_t >::max() );
 
-    vkQueuePresentKHR( presentationQueue_, &presentInfo );
+    auto imageIndex = acquireNextImage();
+
+    vkResetFences( logicalDevice_, 1, &inFlightFences_[ currentFrame_ ] );
+
+    VkSemaphore waitSemaphores[] = { imageAvailableSemaphore_[ currentFrame_ ] };
+    VkSemaphore signalSemaphores[] = { renderFinishedSemaphore_[ currentFrame_ ] };
+
+    submitGraphicQueue( imageIndex, waitSemaphores, signalSemaphores );
+    submitPresentationQueue( imageIndex, signalSemaphores );
 
     currentFrame_ = ( currentFrame_ + 1 ) % maxFrameInFlight_;
   }
 
-  void cleanup()
+  void cleanupSwapChain()
   {
-    for( std::uint8_t i = 0; i < maxFrameInFlight_; ++i )
-    {
-      vkDestroySemaphore( logicalDevice_, renderFinishedSemaphore_[ i ], nullptr );
-      vkDestroySemaphore( logicalDevice_, imageAvailableSemaphore_[ i ], nullptr );
-      vkDestroyFence( logicalDevice_, inFlightFences_[ i ], nullptr );
-    }
-
-    vkDestroyCommandPool( logicalDevice_, commandPool_, nullptr );
-
     for( auto &&framebuffer : swapChainFramebuffers_ )
       vkDestroyFramebuffer( logicalDevice_, framebuffer, nullptr );
 
-    for( auto &&graphicsPipeline : graphicsPipelines_ )
+    vkFreeCommandBuffers( logicalDevice_, commandPool_, static_cast< std::uint32_t >( commandBuffers_.size() ), commandBuffers_.data() );
+
+    for( auto &&graphicsPipeline : graphicPipelines_ )
       vkDestroyPipeline( logicalDevice_, graphicsPipeline, nullptr );
 
     vkDestroyPipelineLayout( logicalDevice_, pipelineLayout_, nullptr );
@@ -984,6 +1047,23 @@ private:
       vkDestroyImageView( logicalDevice_, imageView, nullptr );
 
     vkDestroySwapchainKHR( logicalDevice_, swapChain_, nullptr );
+  }
+
+  void cleanupSynchronizationObjects()
+  {
+    for( std::uint8_t i = 0; i < maxFrameInFlight_; ++i )
+    {
+      vkDestroySemaphore( logicalDevice_, renderFinishedSemaphore_[ i ], nullptr );
+      vkDestroySemaphore( logicalDevice_, imageAvailableSemaphore_[ i ], nullptr );
+      vkDestroyFence( logicalDevice_, inFlightFences_[ i ], nullptr );
+    }
+  }
+
+  void cleanup()
+  {
+    cleanupSwapChain();
+    cleanupSynchronizationObjects();
+    vkDestroyCommandPool( logicalDevice_, commandPool_, nullptr );
     vkDestroyDevice( logicalDevice_, nullptr );
     destroyDebugUtilsMessengerEXT( vulkanInstance_, debugMessenger_, nullptr );
     vkDestroySurfaceKHR( vulkanInstance_, surface_, nullptr );
@@ -1062,6 +1142,12 @@ private:
     return shaderModuleContent;
   }
 
+  static void framebufferResizeCallback( GLFWwindow *window, int, int )
+  {
+    auto app = reinterpret_cast< HelloTriangleApplication * >( glfwGetWindowUserPointer( window ) );
+    app->framebufferResized_ = true;
+  }
+
 private:
   struct RequiredQueueFamilyIndices
   {
@@ -1098,24 +1184,24 @@ private:
 
 private:
   std::filesystem::path applicationPath_;
-  GLFWwindow *window_;
-  VkInstance vulkanInstance_;
-  VkDebugUtilsMessengerEXT debugMessenger_;
-  VkSurfaceKHR surface_;
-  VkPhysicalDevice physicalDevice_;
-  VkDevice logicalDevice_;
-  RequiredQueueFamilyIndices requiredQueueFamilyIndices_;
-  VkQueue graphicsQueue_;
-  VkQueue presentationQueue_;
-  SwapChainSupportDetails swapChainSupportDetails_;
-  VkSwapchainKHR swapChain_;
-  VkSurfaceFormatKHR swapChainSurfaceFormat_;
-  VkExtent2D swapChainExtent_;
+  GLFWwindow *window_{};
+  VkInstance vulkanInstance_{};
+  VkDebugUtilsMessengerEXT debugMessenger_{};
+  VkSurfaceKHR surface_{};
+  VkPhysicalDevice physicalDevice_{};
+  VkDevice logicalDevice_{};
+  RequiredQueueFamilyIndices requiredQueueFamilyIndices_{};
+  VkQueue graphicsQueue_{};
+  VkQueue presentationQueue_{};
+  SwapChainSupportDetails swapChainSupportDetails_{};
+  VkSwapchainKHR swapChain_{};
+  VkSurfaceFormatKHR swapChainSurfaceFormat_{};
+  VkExtent2D swapChainExtent_{};
   std::vector< VkImage > swapChainImages_;
   std::vector< VkImageView > swapChainImageViews_;
   VkRenderPass renderPass_;
   VkPipelineLayout pipelineLayout_;
-  std::vector< VkPipeline > graphicsPipelines_;
+  std::vector< VkPipeline > graphicPipelines_;
   std::vector< VkFramebuffer > swapChainFramebuffers_;
   VkCommandPool commandPool_;
   std::vector< VkCommandBuffer > commandBuffers_;
@@ -1125,6 +1211,7 @@ private:
   std::vector< VkFence > inFlightFences_;
   std::vector< VkFence > inFlightImageFences_;
   std::uint8_t maxFrameInFlight_{ 0 };
+  bool framebufferResized_{ false };
 
 private:
   inline static constexpr int windowWidth_{ 800 };
