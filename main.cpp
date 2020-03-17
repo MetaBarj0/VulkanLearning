@@ -2,6 +2,7 @@
 #define GLFW_INCLUDE_VULKAN
 
 #include <GLFW/glfw3.h>
+#include <glm/glm.hpp>
 
 #include <iostream>
 #include <stdexcept>
@@ -15,6 +16,8 @@
 #include <fstream>
 #include <filesystem>
 #include <tuple>
+#include <array>
+#include <cstring>
 
 class HelloTriangleApplication
 {
@@ -62,8 +65,55 @@ private:
     createGraphicPipeline();
     createFramebuffers();
     createCommandPool();
+    createVertexBuffer();
     createCommandBuffers();
     createSynchronizationObjects();
+  }
+
+  std::uint32_t findMemoryType( std::uint32_t typeFilter, VkMemoryPropertyFlags properties )
+  {
+    VkPhysicalDeviceMemoryProperties memoryProperties;
+    vkGetPhysicalDeviceMemoryProperties( physicalDevice_, &memoryProperties );
+
+    for( std::uint32_t i = 0; i < memoryProperties.memoryTypeCount; i++ )
+      if( ( typeFilter & ( 1 << i ) ) && ( memoryProperties.memoryTypes[ i ].propertyFlags & properties ) == properties )
+        return i;
+
+    throw std::runtime_error{ "Error failed to find suitable memory type!" };
+  }
+
+  void createVertexBuffer()
+  {
+    VkBufferCreateInfo bufferInfo
+    {
+      .sType{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO },
+      .size{ sizeof( Vertex ) * vertices_.size() },
+      .usage{ VK_BUFFER_USAGE_VERTEX_BUFFER_BIT },
+      .sharingMode{ VK_SHARING_MODE_EXCLUSIVE }
+    };
+
+    if( vkCreateBuffer( logicalDevice_, &bufferInfo, nullptr, &vertexBuffer_ ) != VK_SUCCESS )
+      throw std::runtime_error{ "Error failed to create vertex buffer!" };
+
+    VkMemoryRequirements memoryRequirements;
+    vkGetBufferMemoryRequirements( logicalDevice_, vertexBuffer_, &memoryRequirements );
+
+    VkMemoryAllocateInfo allocInfo
+    {
+      .sType{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO },
+      .allocationSize{ memoryRequirements.size },
+      .memoryTypeIndex{ findMemoryType( memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ) }
+    };
+
+    if( vkAllocateMemory( logicalDevice_, &allocInfo, nullptr, &vertexBufferMemory_ ) != VK_SUCCESS )
+      throw std::runtime_error{ "Error failed to allocate vertex buffer memory!" };
+
+    vkBindBufferMemory( logicalDevice_, vertexBuffer_, vertexBufferMemory_, 0 );
+
+    void *data;
+    vkMapMemory( logicalDevice_, vertexBufferMemory_, 0, bufferInfo.size, 0, &data );
+    memcpy( data, vertices_.data(), static_cast< std::size_t >( bufferInfo.size ) );
+    vkUnmapMemory( logicalDevice_, vertexBufferMemory_ );
   }
 
   void recreateSwapChain()
@@ -175,6 +225,11 @@ private:
 
       vkCmdBeginRenderPass( commandBuffers_[ i ], &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE );
       vkCmdBindPipeline( commandBuffers_[ i ], VK_PIPELINE_BIND_POINT_GRAPHICS, graphicPipelines_.front() );
+
+      VkBuffer vertexBuffers[] = { vertexBuffer_ };
+      VkDeviceSize offsets[] = { 0 };
+      vkCmdBindVertexBuffers( commandBuffers_[ i ], 0, 1, vertexBuffers, offsets );
+
       vkCmdDraw( commandBuffers_[ i ], 3, 1, 0, 0 );
       vkCmdEndRenderPass( commandBuffers_[ i ] );
 
@@ -313,13 +368,16 @@ private:
   {
     createGraphicPipelineLayout();
 
+    auto bindingDescription = Vertex::getBindingDescription();
+    auto attributeDescriptions = Vertex::getAttributeDescriptions();
+
     VkPipelineVertexInputStateCreateInfo vertexInputInfo
     {
       .sType{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO },
-      .vertexBindingDescriptionCount{ 0 },
-      .pVertexBindingDescriptions{ nullptr }, // Optional
-      .vertexAttributeDescriptionCount{ 0 },
-      .pVertexAttributeDescriptions{ nullptr } // Optional
+      .vertexBindingDescriptionCount{ 1 },
+      .pVertexBindingDescriptions{ &bindingDescription },
+      .vertexAttributeDescriptionCount{ static_cast< std::uint32_t >( attributeDescriptions.size() ) },
+      .pVertexAttributeDescriptions{ attributeDescriptions.data() }
     };
 
     VkPipelineInputAssemblyStateCreateInfo inputAssembly
@@ -1062,6 +1120,8 @@ private:
   void cleanup()
   {
     cleanupSwapChain();
+    vkDestroyBuffer( logicalDevice_, vertexBuffer_, nullptr );
+    vkFreeMemory( logicalDevice_, vertexBufferMemory_, nullptr );
     cleanupSynchronizationObjects();
     vkDestroyCommandPool( logicalDevice_, commandPool_, nullptr );
     vkDestroyDevice( logicalDevice_, nullptr );
@@ -1182,6 +1242,43 @@ private:
     }
   };
 
+  struct Vertex
+  {
+    glm::vec2 position;
+    glm::vec3 color;
+
+    static VkVertexInputBindingDescription getBindingDescription()
+    {
+      return VkVertexInputBindingDescription
+      {
+        .binding{ 0 },
+        .stride{ sizeof( Vertex ) },
+        .inputRate{ VK_VERTEX_INPUT_RATE_VERTEX }
+      };
+    }
+
+    static std::array< VkVertexInputAttributeDescription, 2 > getAttributeDescriptions()
+    {
+      return std::array< VkVertexInputAttributeDescription, 2 >
+      {
+        {
+          {
+            .location{ 0 },
+              .binding{ 0 },
+              .format{ VK_FORMAT_R32G32_SFLOAT },
+              .offset{ offsetof( Vertex, position ) },
+          },
+          {
+            .location{ 1 },
+            .binding{ 0 },
+            .format{ VK_FORMAT_R32G32B32_SFLOAT },
+            .offset{ offsetof( Vertex, color ) }
+          }
+        }
+      };
+    }
+  };
+
 private:
   std::filesystem::path applicationPath_;
   GLFWwindow *window_{};
@@ -1212,6 +1309,8 @@ private:
   std::vector< VkFence > inFlightImageFences_;
   std::uint8_t maxFrameInFlight_{ 0 };
   bool framebufferResized_{ false };
+  VkBuffer vertexBuffer_;
+  VkDeviceMemory vertexBufferMemory_{};
 
 private:
   inline static constexpr int windowWidth_{ 800 };
@@ -1231,6 +1330,13 @@ private:
   inline static const std::vector< const char * > vulkanProductionExtensions_
   {
     VK_KHR_SWAPCHAIN_EXTENSION_NAME
+  };
+
+  inline static const std::vector< Vertex > vertices_
+  {
+    { { 0.0f, -0.5f }, { 1.0f, 1.0f, 0.0f } },
+    { { 0.5f, 0.5f }, { 0.0f, 1.0f, 1.0f } },
+    { { -0.5f, 0.5f }, { 1.0f, 0.0f, 1.0f } }
   };
 };
 
