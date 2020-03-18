@@ -64,7 +64,7 @@ private:
     createRenderPass();
     createGraphicPipeline();
     createFramebuffers();
-    createCommandPool();
+    createCommandPools();
     createVertexBuffer();
     createCommandBuffers();
     createSynchronizationObjects();
@@ -82,15 +82,28 @@ private:
     throw std::runtime_error{ "Error failed to find suitable memory type!" };
   }
 
-  void createVertexBuffer()
+  void createBuffer( VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer &buffer, VkDeviceMemory &bufferMemory )
   {
+    std::uint32_t queueFamilyIndices[]
+    {
+      requiredQueueFamilyIndices_.graphicsQueueFamilyIndex.value(),
+      requiredQueueFamilyIndices_.transfertQueueFamilyIndex.value()
+    };
+
     VkBufferCreateInfo bufferInfo
     {
       .sType{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO },
-      .size{ sizeof( Vertex ) * vertices_.size() },
-      .usage{ VK_BUFFER_USAGE_VERTEX_BUFFER_BIT },
+      .size{ size },
+      .usage{ usage },
       .sharingMode{ VK_SHARING_MODE_EXCLUSIVE }
     };
+
+    if( requiredQueueFamilyIndices_.graphicsQueueFamilyIndex != requiredQueueFamilyIndices_.transfertQueueFamilyIndex )
+    {
+      bufferInfo.sharingMode = VK_SHARING_MODE_CONCURRENT;
+      bufferInfo.queueFamilyIndexCount = 2;
+      bufferInfo.pQueueFamilyIndices = queueFamilyIndices;
+    }
 
     if( vkCreateBuffer( logicalDevice_, &bufferInfo, nullptr, &vertexBuffer_ ) != VK_SUCCESS )
       throw std::runtime_error{ "Error failed to create vertex buffer!" };
@@ -102,17 +115,26 @@ private:
     {
       .sType{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO },
       .allocationSize{ memoryRequirements.size },
-      .memoryTypeIndex{ findMemoryType( memoryRequirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT ) }
+      .memoryTypeIndex{ findMemoryType( memoryRequirements.memoryTypeBits, properties ) }
     };
 
     if( vkAllocateMemory( logicalDevice_, &allocInfo, nullptr, &vertexBufferMemory_ ) != VK_SUCCESS )
       throw std::runtime_error{ "Error failed to allocate vertex buffer memory!" };
 
-    vkBindBufferMemory( logicalDevice_, vertexBuffer_, vertexBufferMemory_, 0 );
+    vkBindBufferMemory( logicalDevice_, buffer, bufferMemory, 0 );
+  }
+
+  void createVertexBuffer()
+  {
+    VkDeviceSize bufferSize = sizeof( Vertex ) * vertices_.size();
+    createBuffer( bufferSize,
+                  VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                  vertexBuffer_, vertexBufferMemory_ );
 
     void *data;
-    vkMapMemory( logicalDevice_, vertexBufferMemory_, 0, bufferInfo.size, 0, &data );
-    memcpy( data, vertices_.data(), static_cast< std::size_t >( bufferInfo.size ) );
+    vkMapMemory( logicalDevice_, vertexBufferMemory_, 0, bufferSize, 0, &data );
+    memcpy( data, vertices_.data(), static_cast< std::size_t >( bufferSize ) );
     vkUnmapMemory( logicalDevice_, vertexBufferMemory_ );
   }
 
@@ -177,7 +199,7 @@ private:
     VkCommandBufferAllocateInfo allocInfo
     {
       .sType{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO },
-      .commandPool{ commandPool_ },
+      .commandPool{ graphicCommandPool_ },
       .level{ VK_COMMAND_BUFFER_LEVEL_PRIMARY },
       .commandBufferCount{ static_cast< std::uint32_t >( commandBuffers_.size() ) }
     };
@@ -238,7 +260,7 @@ private:
     }
   }
 
-  void createCommandPool()
+  void createGraphicPool()
   {
     VkCommandPoolCreateInfo poolInfo
     {
@@ -247,8 +269,27 @@ private:
       .queueFamilyIndex{ requiredQueueFamilyIndices_.graphicsQueueFamilyIndex.value() }
     };
 
-    if( vkCreateCommandPool( logicalDevice_, &poolInfo, nullptr, &commandPool_ ) != VK_SUCCESS )
-      throw std::runtime_error{ "Error failed to create command pool!" };
+    if( vkCreateCommandPool( logicalDevice_, &poolInfo, nullptr, &graphicCommandPool_ ) != VK_SUCCESS )
+      throw std::runtime_error{ "Error failed to create the graphic command pool!" };
+  }
+
+  void createTransfertPool()
+  {
+    VkCommandPoolCreateInfo poolInfo
+    {
+      .sType{ VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO },
+      .flags{ 0 }, // Optional
+      .queueFamilyIndex{ requiredQueueFamilyIndices_.transfertQueueFamilyIndex.value() }
+    };
+
+    if( vkCreateCommandPool( logicalDevice_, &poolInfo, nullptr, &transfertCommandPool_ ) != VK_SUCCESS )
+      throw std::runtime_error{ "Error failed to create the transfert command pool!" };
+  }
+
+  void createCommandPools()
+  {
+    createGraphicPool();
+    createTransfertPool();
   }
 
   void createFramebuffers()
@@ -717,6 +758,7 @@ private:
 
     vkGetDeviceQueue( logicalDevice_, requiredQueueFamilyIndices_.graphicsQueueFamilyIndex.value(), 0, &graphicsQueue_ );
     vkGetDeviceQueue( logicalDevice_, requiredQueueFamilyIndices_.presentationQueueFamilyIndex.value(), 0, &presentationQueue_ );
+    vkGetDeviceQueue( logicalDevice_, requiredQueueFamilyIndices_.transfertQueueFamilyIndex.value(), 0, &transfertQueue_ );
   }
 
   void pickFirstSuitablePhysicalDevice()
@@ -815,6 +857,9 @@ private:
 
       if( hasPresentationSupport )
         requiredQueueFamilyIndices_.presentationQueueFamilyIndex = queueFamilyIndex;
+
+      if( queueFamily.queueFlags & VK_QUEUE_TRANSFER_BIT )
+        requiredQueueFamilyIndices_.transfertQueueFamilyIndex = queueFamilyIndex;
 
       if( requiredQueueFamilyIndices_.isComplete() )
         break;
@@ -1093,7 +1138,7 @@ private:
     for( auto &&framebuffer : swapChainFramebuffers_ )
       vkDestroyFramebuffer( logicalDevice_, framebuffer, nullptr );
 
-    vkFreeCommandBuffers( logicalDevice_, commandPool_, static_cast< std::uint32_t >( commandBuffers_.size() ), commandBuffers_.data() );
+    vkFreeCommandBuffers( logicalDevice_, graphicCommandPool_, static_cast< std::uint32_t >( commandBuffers_.size() ), commandBuffers_.data() );
 
     for( auto &&graphicsPipeline : graphicPipelines_ )
       vkDestroyPipeline( logicalDevice_, graphicsPipeline, nullptr );
@@ -1123,7 +1168,8 @@ private:
     vkDestroyBuffer( logicalDevice_, vertexBuffer_, nullptr );
     vkFreeMemory( logicalDevice_, vertexBufferMemory_, nullptr );
     cleanupSynchronizationObjects();
-    vkDestroyCommandPool( logicalDevice_, commandPool_, nullptr );
+    vkDestroyCommandPool( logicalDevice_, graphicCommandPool_, nullptr );
+    vkDestroyCommandPool( logicalDevice_, transfertCommandPool_, nullptr );
     vkDestroyDevice( logicalDevice_, nullptr );
     destroyDebugUtilsMessengerEXT( vulkanInstance_, debugMessenger_, nullptr );
     vkDestroySurfaceKHR( vulkanInstance_, surface_, nullptr );
@@ -1213,10 +1259,13 @@ private:
   {
     std::optional< std::uint32_t > graphicsQueueFamilyIndex;
     std::optional< std::uint32_t > presentationQueueFamilyIndex;
+    std::optional< std::uint32_t > transfertQueueFamilyIndex;
 
     constexpr bool isComplete() const noexcept
     {
-      return graphicsQueueFamilyIndex.has_value() && presentationQueueFamilyIndex.has_value();
+      return ( graphicsQueueFamilyIndex.has_value()
+               && presentationQueueFamilyIndex.has_value()
+               && transfertQueueFamilyIndex.has_value() );
     }
 
     std::set< std::uint32_t > toSet() const noexcept
@@ -1224,7 +1273,10 @@ private:
       std::set< std::uint32_t > set;
 
       if( isComplete() )
-        set.insert( { graphicsQueueFamilyIndex.value(), presentationQueueFamilyIndex.value() } );
+        set.insert( {
+        graphicsQueueFamilyIndex.value(),
+        presentationQueueFamilyIndex.value(),
+        transfertQueueFamilyIndex.value() } );
 
       return set;
     }
@@ -1290,6 +1342,7 @@ private:
   RequiredQueueFamilyIndices requiredQueueFamilyIndices_{};
   VkQueue graphicsQueue_{};
   VkQueue presentationQueue_{};
+  VkQueue transfertQueue_{};
   SwapChainSupportDetails swapChainSupportDetails_{};
   VkSwapchainKHR swapChain_{};
   VkSurfaceFormatKHR swapChainSurfaceFormat_{};
@@ -1300,7 +1353,8 @@ private:
   VkPipelineLayout pipelineLayout_;
   std::vector< VkPipeline > graphicPipelines_;
   std::vector< VkFramebuffer > swapChainFramebuffers_;
-  VkCommandPool commandPool_;
+  VkCommandPool graphicCommandPool_;
+  VkCommandPool transfertCommandPool_;
   std::vector< VkCommandBuffer > commandBuffers_;
   std::vector< VkSemaphore > imageAvailableSemaphore_;
   std::vector< VkSemaphore > renderFinishedSemaphore_;
@@ -1349,7 +1403,7 @@ int main( int argc, char *argv[] )
   {
     app.run();
   }
-  catch( const std::exception & e )
+  catch( const std::exception &e )
   {
     std::cerr << e.what() << std::endl;
 
