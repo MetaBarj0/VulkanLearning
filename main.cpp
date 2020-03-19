@@ -105,11 +105,11 @@ private:
       bufferInfo.pQueueFamilyIndices = queueFamilyIndices;
     }
 
-    if( vkCreateBuffer( logicalDevice_, &bufferInfo, nullptr, &vertexBuffer_ ) != VK_SUCCESS )
+    if( vkCreateBuffer( logicalDevice_, &bufferInfo, nullptr, &buffer ) != VK_SUCCESS )
       throw std::runtime_error{ "Error failed to create vertex buffer!" };
 
     VkMemoryRequirements memoryRequirements;
-    vkGetBufferMemoryRequirements( logicalDevice_, vertexBuffer_, &memoryRequirements );
+    vkGetBufferMemoryRequirements( logicalDevice_, buffer, &memoryRequirements );
 
     VkMemoryAllocateInfo allocInfo
     {
@@ -118,24 +118,84 @@ private:
       .memoryTypeIndex{ findMemoryType( memoryRequirements.memoryTypeBits, properties ) }
     };
 
-    if( vkAllocateMemory( logicalDevice_, &allocInfo, nullptr, &vertexBufferMemory_ ) != VK_SUCCESS )
+    if( vkAllocateMemory( logicalDevice_, &allocInfo, nullptr, &bufferMemory ) != VK_SUCCESS )
       throw std::runtime_error{ "Error failed to allocate vertex buffer memory!" };
 
     vkBindBufferMemory( logicalDevice_, buffer, bufferMemory, 0 );
   }
 
+  void copyBuffer( VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size )
+  {
+    VkCommandBufferAllocateInfo allocInfo
+    {
+      .sType{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO },
+      .commandPool{ transfertCommandPool_ },
+      .level{ VK_COMMAND_BUFFER_LEVEL_PRIMARY },
+      .commandBufferCount{ 1 }
+    };
+
+    VkCommandBuffer commandBuffer;
+    if( vkAllocateCommandBuffers( logicalDevice_, &allocInfo, &commandBuffer ) != VK_SUCCESS )
+      throw std::runtime_error{ "Error failed to allocate a command buffer" };
+
+    VkCommandBufferBeginInfo beginInfo
+    {
+      .sType{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO },
+      .flags{ VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT }
+    };
+
+    vkBeginCommandBuffer( commandBuffer, &beginInfo );
+
+    VkBufferCopy copyRegion
+    {
+      .srcOffset{ 0 }, // Optional
+      .dstOffset{ 0 }, // Optional
+      .size{ size }
+    };
+
+    vkCmdCopyBuffer( commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion );
+
+    vkEndCommandBuffer( commandBuffer );
+
+    VkSubmitInfo submitInfo
+    {
+      .sType{ VK_STRUCTURE_TYPE_SUBMIT_INFO },
+      .commandBufferCount{ 1 },
+      .pCommandBuffers{ &commandBuffer }
+    };
+
+    vkQueueSubmit( transfertQueue_, 1, &submitInfo, VK_NULL_HANDLE );
+    vkQueueWaitIdle( transfertQueue_ );
+
+    vkFreeCommandBuffers( logicalDevice_, transfertCommandPool_, 1, &commandBuffer );
+  }
+
   void createVertexBuffer()
   {
     VkDeviceSize bufferSize = sizeof( Vertex ) * vertices_.size();
+
+    VkBuffer stagingBuffer;
+    VkDeviceMemory stagingBufferMemory;
+
     createBuffer( bufferSize,
-                  VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                  VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                   VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
-                  vertexBuffer_, vertexBufferMemory_ );
+                  stagingBuffer, stagingBufferMemory );
 
     void *data;
-    vkMapMemory( logicalDevice_, vertexBufferMemory_, 0, bufferSize, 0, &data );
+    vkMapMemory( logicalDevice_, stagingBufferMemory, 0, bufferSize, 0, &data );
     memcpy( data, vertices_.data(), static_cast< std::size_t >( bufferSize ) );
-    vkUnmapMemory( logicalDevice_, vertexBufferMemory_ );
+    vkUnmapMemory( logicalDevice_, stagingBufferMemory );
+
+    createBuffer( bufferSize,
+                  VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                  vertexBuffer_, vertexBufferMemory_ );
+
+    copyBuffer( stagingBuffer, vertexBuffer_, bufferSize );
+
+    vkDestroyBuffer( logicalDevice_, stagingBuffer, nullptr );
+    vkFreeMemory( logicalDevice_, stagingBufferMemory, nullptr );
   }
 
   void recreateSwapChain()
@@ -260,30 +320,33 @@ private:
     }
   }
 
-  void createGraphicPool()
+  void createCommandPool( VkCommandPoolCreateFlags flags, std::uint32_t queueFamilyIndex, VkCommandPool *commandPool, const char *const exceptionMessage )
   {
     VkCommandPoolCreateInfo poolInfo
     {
       .sType{ VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO },
-      .flags{ 0 }, // Optional
-      .queueFamilyIndex{ requiredQueueFamilyIndices_.graphicsQueueFamilyIndex.value() }
+      .flags{ flags },
+      .queueFamilyIndex{ queueFamilyIndex }
     };
 
-    if( vkCreateCommandPool( logicalDevice_, &poolInfo, nullptr, &graphicCommandPool_ ) != VK_SUCCESS )
-      throw std::runtime_error{ "Error failed to create the graphic command pool!" };
+    if( vkCreateCommandPool( logicalDevice_, &poolInfo, nullptr, commandPool ) != VK_SUCCESS )
+      throw std::runtime_error{ exceptionMessage };
+  }
+
+  void createGraphicPool()
+  {
+    createCommandPool( 0,
+                       requiredQueueFamilyIndices_.graphicsQueueFamilyIndex.value(),
+                       &graphicCommandPool_,
+                       "Error failed to create the graphic command pool!" );
   }
 
   void createTransfertPool()
   {
-    VkCommandPoolCreateInfo poolInfo
-    {
-      .sType{ VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO },
-      .flags{ 0 }, // Optional
-      .queueFamilyIndex{ requiredQueueFamilyIndices_.transfertQueueFamilyIndex.value() }
-    };
-
-    if( vkCreateCommandPool( logicalDevice_, &poolInfo, nullptr, &transfertCommandPool_ ) != VK_SUCCESS )
-      throw std::runtime_error{ "Error failed to create the transfert command pool!" };
+    createCommandPool( VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
+                       requiredQueueFamilyIndices_.transfertQueueFamilyIndex.value(),
+                       &transfertCommandPool_,
+                       "Error failed to create the transfert command pool!" );
   }
 
   void createCommandPools()
@@ -1187,7 +1250,7 @@ private:
 #else
       true;
 #endif // NDEBUG
-  }
+}
 
   static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback( VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
                                                        VkDebugUtilsMessageTypeFlagsEXT messageType,
