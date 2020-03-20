@@ -47,8 +47,36 @@ private:
       throw std::runtime_error{ "Error when creating GLFW window" };
 
     glfwSetWindowUserPointer( window_, this );
-
     glfwSetFramebufferSizeCallback( window_, framebufferResizeCallback );
+  }
+
+  void createIndexBuffer()
+  {
+    VkDeviceSize bufferSize = sizeof( typename decltype( indices_ )::value_type ) * indices_.size();
+
+    VkBuffer stagingBuffer;
+    VkDeviceMemory stagingBufferMemory;
+
+    createBuffer( bufferSize,
+                  VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                  stagingBuffer, stagingBufferMemory );
+
+    void *data;
+    vkMapMemory( logicalDevice_, stagingBufferMemory, 0, bufferSize, 0, &data );
+    std::memcpy( data, indices_.data(), static_cast< size_t >( bufferSize ) );
+    vkUnmapMemory( logicalDevice_, stagingBufferMemory );
+
+    createBuffer( bufferSize,
+                  VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+                  VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                  indexBuffer_,
+                  indexBufferMemory_ );
+
+    copyBuffer( stagingBuffer, indexBuffer_, bufferSize );
+
+    vkDestroyBuffer( logicalDevice_, stagingBuffer, nullptr );
+    vkFreeMemory( logicalDevice_, stagingBufferMemory, nullptr );
   }
 
   void initVulkan()
@@ -66,6 +94,7 @@ private:
     createFramebuffers();
     createCommandPools();
     createVertexBuffer();
+    createIndexBuffer();
     createCommandBuffers();
     createSynchronizationObjects();
   }
@@ -184,13 +213,14 @@ private:
 
     void *data;
     vkMapMemory( logicalDevice_, stagingBufferMemory, 0, bufferSize, 0, &data );
-    memcpy( data, vertices_.data(), static_cast< std::size_t >( bufferSize ) );
+    std::memcpy( data, vertices_.data(), static_cast< std::size_t >( bufferSize ) );
     vkUnmapMemory( logicalDevice_, stagingBufferMemory );
 
     createBuffer( bufferSize,
                   VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                   VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-                  vertexBuffer_, vertexBufferMemory_ );
+                  vertexBuffer_,
+                  vertexBufferMemory_ );
 
     copyBuffer( stagingBuffer, vertexBuffer_, bufferSize );
 
@@ -311,8 +341,9 @@ private:
       VkBuffer vertexBuffers[] = { vertexBuffer_ };
       VkDeviceSize offsets[] = { 0 };
       vkCmdBindVertexBuffers( commandBuffers_[ i ], 0, 1, vertexBuffers, offsets );
+      vkCmdBindIndexBuffer( commandBuffers_[ i ], indexBuffer_, 0, VK_INDEX_TYPE_UINT16 );
 
-      vkCmdDraw( commandBuffers_[ i ], 3, 1, 0, 0 );
+      vkCmdDrawIndexed( commandBuffers_[ i ], static_cast< uint32_t >( indices_.size() ), 1, 0, 0, 0 );
       vkCmdEndRenderPass( commandBuffers_[ i ] );
 
       if( vkEndCommandBuffer( commandBuffers_[ i ] ) != VK_SUCCESS )
@@ -1228,6 +1259,8 @@ private:
   void cleanup()
   {
     cleanupSwapChain();
+    vkDestroyBuffer( logicalDevice_, indexBuffer_, nullptr );
+    vkFreeMemory( logicalDevice_, indexBufferMemory_, nullptr );
     vkDestroyBuffer( logicalDevice_, vertexBuffer_, nullptr );
     vkFreeMemory( logicalDevice_, vertexBufferMemory_, nullptr );
     cleanupSynchronizationObjects();
@@ -1250,7 +1283,7 @@ private:
 #else
       true;
 #endif // NDEBUG
-}
+  }
 
   static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback( VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
                                                        VkDebugUtilsMessageTypeFlagsEXT messageType,
@@ -1428,6 +1461,8 @@ private:
   bool framebufferResized_{ false };
   VkBuffer vertexBuffer_;
   VkDeviceMemory vertexBufferMemory_{};
+  VkBuffer indexBuffer_;
+  VkDeviceMemory indexBufferMemory_;
 
 private:
   inline static constexpr int windowWidth_{ 800 };
@@ -1451,10 +1486,13 @@ private:
 
   inline static const std::vector< Vertex > vertices_
   {
-    { { 0.0f, -0.5f }, { 1.0f, 1.0f, 0.0f } },
-    { { 0.5f, 0.5f }, { 0.0f, 1.0f, 1.0f } },
-    { { -0.5f, 0.5f }, { 1.0f, 0.0f, 1.0f } }
+    { { -0.5f, -0.5f}, { 1.0f, 0.0f, 0.0f} },
+    { { 0.5f, -0.5f}, { 0.0f, 1.0f, 0.0f} },
+    { { 0.5f, 0.5f}, { 0.0f, 0.0f, 1.0f} },
+    { { -0.5f, 0.5f}, { 1.0f, 1.0f, 1.0f} }
   };
+
+  inline static const std::vector< std::uint16_t > indices_{ 0,1,2,2,3,0 };
 };
 
 int main( int argc, char *argv[] )
