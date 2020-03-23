@@ -1,8 +1,10 @@
 // https://vulkan-tutorial.com
 #define GLFW_INCLUDE_VULKAN
-
 #include <GLFW/glfw3.h>
+
+#define GLM_FORCE_RADIANS
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 #include <iostream>
 #include <stdexcept>
@@ -18,11 +20,14 @@
 #include <tuple>
 #include <array>
 #include <cstring>
+#include <chrono>
 
-class HelloTriangleApplication
+
+
+class VulkanApplication
 {
 public:
-  HelloTriangleApplication( std::filesystem::path path ) : applicationPath_{ path } {}
+  VulkanApplication( std::filesystem::path path ) : applicationPath_{ path } {}
 
   void run()
   {
@@ -85,6 +90,103 @@ private:
     vkFreeMemory( logicalDevice_, stagingBufferMemory, nullptr );
   }
 
+  void createDescriptorSetLayout()
+  {
+    VkDescriptorSetLayoutBinding uboLayoutBinding
+    {
+      .binding{ 0 },
+      .descriptorType{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER },
+      .descriptorCount{ 1 },
+      .stageFlags{ VK_SHADER_STAGE_VERTEX_BIT }
+    };
+
+    VkDescriptorSetLayoutCreateInfo layoutInfo
+    {
+      .sType{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO },
+      .bindingCount{ 1 },
+      .pBindings{ &uboLayoutBinding }
+    };
+
+    if( vkCreateDescriptorSetLayout( logicalDevice_, &layoutInfo, nullptr, &descriptorSetLayout_ ) != VK_SUCCESS )
+      throw std::runtime_error{ "Error failed to create descriptor set layout!" };
+  }
+
+  void createUniformBuffers()
+  {
+    VkDeviceSize bufferSize = sizeof( UniformBufferObject );
+
+    uniformBuffers_.resize( swapChainImages_.size() );
+    uniformBuffersMemory_.resize( swapChainImages_.size() );
+
+    for( std::size_t i = 0; i < swapChainImages_.size(); i++ )
+      createBuffer( bufferSize,
+                    VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                    VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                    uniformBuffers_[ i ],
+                    uniformBuffersMemory_[ i ] );
+  }
+
+  void createDescriptorPool()
+  {
+    VkDescriptorPoolSize poolSize
+    {
+      .type{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER },
+      .descriptorCount{ static_cast< std::uint32_t >( swapChainImages_.size() ) }
+    };
+
+    VkDescriptorPoolCreateInfo poolInfo
+    {
+      .sType{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO },
+      .maxSets{ static_cast< std::uint32_t >( swapChainImages_.size() ) },
+      .poolSizeCount{ 1 },
+      .pPoolSizes{ &poolSize }
+    };
+
+    if( vkCreateDescriptorPool( logicalDevice_, &poolInfo, nullptr, &descriptorPool_ ) != VK_SUCCESS )
+      throw std::runtime_error{ "Error failed to create descriptor pool!" };
+  }
+
+  void createDescriptorSets()
+  {
+    std::vector< VkDescriptorSetLayout > layouts{ swapChainImages_.size(), descriptorSetLayout_ };
+    VkDescriptorSetAllocateInfo allocInfo
+    {
+      .sType{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO },
+      .descriptorPool{ descriptorPool_ },
+      .descriptorSetCount{ static_cast< std::uint32_t >( swapChainImages_.size() ) },
+      .pSetLayouts{ layouts.data() }
+    };
+
+    descriptorSets_.resize( swapChainImages_.size() );
+    if( vkAllocateDescriptorSets( logicalDevice_, &allocInfo, descriptorSets_.data() ) != VK_SUCCESS )
+      throw std::runtime_error{ "Error failed to allocate descriptor sets!" };
+
+    for( std::size_t i = 0; i < swapChainImages_.size(); i++ )
+    {
+      VkDescriptorBufferInfo buffersInfo[]
+      {
+        {
+          .buffer{ uniformBuffers_[ i ] },
+          .offset{ 0 },
+          .range{ sizeof( UniformBufferObject ) }
+        }
+      };
+
+      VkWriteDescriptorSet descriptorWrite
+      {
+        .sType{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET },
+        .dstSet{ descriptorSets_[ i ] },
+        .dstBinding{ 0 },
+        .dstArrayElement{ 0 },
+        .descriptorCount{ static_cast< std::uint32_t >( sizeof( buffersInfo ) / sizeof( VkDescriptorBufferInfo ) ) },
+        .descriptorType{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER },
+        .pBufferInfo{ buffersInfo }
+      };
+
+      vkUpdateDescriptorSets( logicalDevice_, descriptorWrite.descriptorCount, &descriptorWrite, 0, nullptr );
+    }
+  }
+
   void initVulkan()
   {
     checkValidationSupport();
@@ -96,11 +198,15 @@ private:
     createSwapChain();
     createImageViews();
     createRenderPass();
+    createDescriptorSetLayout();
     createGraphicPipeline();
     createFramebuffers();
     createCommandPools();
     createVertexBuffer();
     createIndexBuffer();
+    createUniformBuffers();
+    createDescriptorPool();
+    createDescriptorSets();
     createDrawCommandBuffers();
     createSynchronizationObjects();
   }
@@ -254,6 +360,9 @@ private:
     createRenderPass();
     createGraphicPipeline();
     createFramebuffers();
+    createUniformBuffers();
+    createDescriptorPool();
+    createDescriptorSets();
     createDrawCommandBuffers();
   }
 
@@ -294,7 +403,7 @@ private:
         throw std::runtime_error{ "Error failed to create synchronization objects!" };
   }
 
-  void createDrawCommandBuffer( VkFramebuffer targetFrameBuffer, VkCommandBuffer targetCommandBuffer )
+  void createDrawCommandBuffer( VkFramebuffer targetFrameBuffer, VkCommandBuffer targetCommandBuffer, const VkDescriptorSet *targetDescriptorSet )
   {
     VkCommandBufferBeginInfo beginInfo
     {
@@ -334,6 +443,7 @@ private:
     VkDeviceSize offsets[] = { 0 };
     vkCmdBindVertexBuffers( targetCommandBuffer, 0, 1, vertexBuffers, offsets );
     vkCmdBindIndexBuffer( targetCommandBuffer, indexBuffer_, 0, VK_INDEX_TYPE_UINT16 );
+    vkCmdBindDescriptorSets( targetCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 0, 1, targetDescriptorSet, 0, nullptr );
 
     vkCmdDrawIndexed( targetCommandBuffer, static_cast< uint32_t >( indices_.size() ), 1, 0, 0, 0 );
     vkCmdEndRenderPass( targetCommandBuffer );
@@ -349,7 +459,7 @@ private:
     allocateCommandBuffers( graphicCommandPool_, static_cast< std::uint32_t >( commandBuffers_.size() ), commandBuffers_.data() );
 
     for( std::size_t i = 0; i < commandBuffers_.size(); i++ )
-      createDrawCommandBuffer( swapChainFramebuffers_[ i ], commandBuffers_[ i ] );
+      createDrawCommandBuffer( swapChainFramebuffers_[ i ], commandBuffers_[ i ], &descriptorSets_[ i ] );
   }
 
   void createCommandPool( VkCommandPoolCreateFlags flags, std::uint32_t queueFamilyIndex, VkCommandPool *commandPool, const char *const exceptionMessage )
@@ -419,14 +529,6 @@ private:
 
   void createRenderPass()
   {
-    VkAttachmentReference colorAttachmentReferences[]
-    {
-      {
-        .attachment{ 0 },
-        .layout{ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL }
-      }
-    };
-
     VkAttachmentDescription colorAttachmentDescriptions[]
     {
       {
@@ -438,6 +540,14 @@ private:
         .stencilStoreOp{ VK_ATTACHMENT_STORE_OP_DONT_CARE },
         .initialLayout{ VK_IMAGE_LAYOUT_UNDEFINED },
         .finalLayout{ VK_IMAGE_LAYOUT_PRESENT_SRC_KHR },
+      }
+    };
+
+    VkAttachmentReference colorAttachmentReferences[]
+    {
+      {
+        .attachment{ 0 },
+        .layout{ VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL }
       }
     };
 
@@ -493,8 +603,8 @@ private:
     VkPipelineLayoutCreateInfo pipelineLayoutInfo
     {
       .sType{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO },
-      .setLayoutCount{ 0 }, // Optional
-      .pSetLayouts{ nullptr }, // Optional
+      .setLayoutCount{ 1 },
+      .pSetLayouts{ &descriptorSetLayout_ },
       .pushConstantRangeCount{ 0 }, // Optional
       .pPushConstantRanges{ nullptr }, // Optional
     };
@@ -562,7 +672,7 @@ private:
       .rasterizerDiscardEnable{ VK_FALSE },
       .polygonMode{ VK_POLYGON_MODE_FILL },
       .cullMode{ VK_CULL_MODE_BACK_BIT },
-      .frontFace{ VK_FRONT_FACE_CLOCKWISE },
+      .frontFace{ VK_FRONT_FACE_COUNTER_CLOCKWISE },
       .depthBiasEnable{ VK_FALSE },
       .depthBiasConstantFactor{ 0.0f }, // Optional
       .depthBiasClamp{ 0.0f }, // Optional
@@ -1232,11 +1342,51 @@ private:
       throw std::runtime_error{ "Error failed to submit draw command buffer!" };
   }
 
+  void updateUniformBuffer( std::uint32_t imageIndex )
+  {
+    static auto startTime = std::chrono::high_resolution_clock::now();
+
+    auto currentTime = std::chrono::high_resolution_clock::now();
+    float delta = std::chrono::duration< float, std::chrono::seconds::period >( currentTime - startTime ).count();
+
+    UniformBufferObject ubo
+    {
+      .model
+      {
+          glm::rotate( glm::mat4( 1.0f ),
+                       delta * glm::radians( 90.0f ),
+                       glm::vec3( 0.0f, 0.0f, 1.0f ) )
+      },
+      .view
+      {
+        glm::lookAt( glm::vec3( 2.0f, 2.0f, 2.0f ),
+                     glm::vec3( 0.0f, 0.0f, 0.0f ),
+                     glm::vec3( 0.0f, 0.0f, 1.0f ) )
+      },
+      .proj
+      {
+        glm::perspective( glm::radians( 20.0f ),
+                          swapChainExtent_.width / static_cast< float >( swapChainExtent_.height ),
+                          0.1f,
+                          9.9f )
+      }
+    };
+
+    ubo.proj[ 1 ][ 1 ] *= -1;
+
+    void *data;
+    vkMapMemory( logicalDevice_, uniformBuffersMemory_[ imageIndex ], 0, sizeof( UniformBufferObject ), 0, &data );
+    memcpy( data, &ubo, sizeof( UniformBufferObject ) );
+    vkUnmapMemory( logicalDevice_, uniformBuffersMemory_[ imageIndex ] );
+  }
+
   void drawFrame()
   {
     vkWaitForFences( logicalDevice_, 1, &inFlightFences_[ currentFrame_ ], VK_TRUE, std::numeric_limits< std::uint64_t >::max() );
 
     auto imageIndex = acquireNextImage();
+
+    updateUniformBuffer( imageIndex );
 
     vkResetFences( logicalDevice_, 1, &inFlightFences_[ currentFrame_ ] );
 
@@ -1266,6 +1416,14 @@ private:
       vkDestroyImageView( logicalDevice_, imageView, nullptr );
 
     vkDestroySwapchainKHR( logicalDevice_, swapChain_, nullptr );
+
+    for( auto &&uniformBuffer : uniformBuffers_ )
+      vkDestroyBuffer( logicalDevice_, uniformBuffer, nullptr );
+
+    for( auto &&uniformBufferMemory : uniformBuffersMemory_ )
+      vkFreeMemory( logicalDevice_, uniformBufferMemory, nullptr );
+
+    vkDestroyDescriptorPool( logicalDevice_, descriptorPool_, nullptr );
   }
 
   void cleanupSynchronizationObjects()
@@ -1281,6 +1439,7 @@ private:
   void cleanup()
   {
     cleanupSwapChain();
+    vkDestroyDescriptorSetLayout( logicalDevice_, descriptorSetLayout_, nullptr );
     vkDestroyBuffer( logicalDevice_, indexBuffer_, nullptr );
     vkFreeMemory( logicalDevice_, indexBufferMemory_, nullptr );
     vkDestroyBuffer( logicalDevice_, vertexBuffer_, nullptr );
@@ -1305,7 +1464,7 @@ private:
 #else
       true;
 #endif // NDEBUG
-}
+  }
 
   static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback( VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
                                                        VkDebugUtilsMessageTypeFlagsEXT messageType,
@@ -1368,7 +1527,7 @@ private:
 
   static void framebufferResizeCallback( GLFWwindow *window, int, int )
   {
-    auto app = reinterpret_cast< HelloTriangleApplication * >( glfwGetWindowUserPointer( window ) );
+    auto app = reinterpret_cast< VulkanApplication * >( glfwGetWindowUserPointer( window ) );
     app->framebufferResized_ = true;
   }
 
@@ -1449,6 +1608,13 @@ private:
     }
   };
 
+  struct UniformBufferObject
+  {
+    alignas( 16 ) glm::mat4 model;
+    alignas( 16 ) glm::mat4 view;
+    alignas( 16 ) glm::mat4 proj;
+  };
+
 private:
   std::filesystem::path applicationPath_;
   GLFWwindow *window_{};
@@ -1468,6 +1634,7 @@ private:
   std::vector< VkImage > swapChainImages_;
   std::vector< VkImageView > swapChainImageViews_;
   VkRenderPass renderPass_;
+  VkDescriptorSetLayout descriptorSetLayout_;
   VkPipelineLayout pipelineLayout_;
   std::vector< VkPipeline > graphicPipelines_;
   std::vector< VkFramebuffer > swapChainFramebuffers_;
@@ -1485,6 +1652,10 @@ private:
   VkDeviceMemory vertexBufferMemory_{};
   VkBuffer indexBuffer_;
   VkDeviceMemory indexBufferMemory_;
+  std::vector< VkBuffer > uniformBuffers_;
+  std::vector< VkDeviceMemory > uniformBuffersMemory_;
+  VkDescriptorPool descriptorPool_;
+  std::vector< VkDescriptorSet > descriptorSets_;
 
 private:
   inline static constexpr int windowWidth_{ 800 };
@@ -1520,7 +1691,7 @@ private:
 int main( int argc, char *argv[] )
 {
   // assuming program path is specified in argv[ 0 ], that might not necessary be the case, fragile assumption but working in that context
-  HelloTriangleApplication app{ argv[ 0 ] };
+  VulkanApplication app{ argv[ 0 ] };
 
   try
   {
