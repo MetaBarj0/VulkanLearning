@@ -6,6 +6,9 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 
+#define STB_IMAGE_IMPLEMENTATION
+#include "thirdparty/stb/stb_image.h"
+
 #include <iostream>
 #include <stdexcept>
 #include <functional>
@@ -21,8 +24,6 @@
 #include <array>
 #include <cstring>
 #include <chrono>
-
-
 
 class VulkanApplication
 {
@@ -187,6 +188,123 @@ private:
     }
   }
 
+  auto getTexturePixels()
+  {
+    auto texture = applicationPath_.parent_path() / "textures" / "texture.jpg";
+
+    int width, height, texChannels;
+    stbi_uc *pixels = stbi_load( texture.string().c_str(), &width, &height, &texChannels, STBI_rgb_alpha );
+    VkDeviceSize size = static_cast< std::uint64_t >( width * height * 4ull );
+
+    if( !pixels )
+      throw std::runtime_error{ "Error failed to load texture image!" };
+
+    return TexturePixelsBuffer
+    {
+      pixels,
+      width,
+      height,
+      size
+    };
+  }
+
+  void createImage( std::uint32_t width,
+                    std::uint32_t height,
+                    VkFormat format,
+                    VkImageTiling tiling,
+                    VkImageUsageFlags usage,
+                    VkMemoryPropertyFlags memoryProperties,
+                    VkImage &image,
+                    VkDeviceMemory &imageMemory )
+  {
+    VkImageCreateInfo imageInfo
+    {
+      .sType{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO },
+      .imageType{ VK_IMAGE_TYPE_2D },
+      .format{ format },
+      .extent
+      {
+        .width{ width },
+        .height{ height },
+        .depth{ 1 }
+      },
+      .mipLevels{ 1 },
+      .arrayLayers{ 1 },
+      .samples{ VK_SAMPLE_COUNT_1_BIT },
+      .tiling{ tiling },
+      .usage{ usage },
+      .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+      .initialLayout{ VK_IMAGE_LAYOUT_UNDEFINED }
+    };
+
+    // todo - robustify that by taking into account all supported queues, not only transfer and graphic
+    std::uint32_t queueFamilyIndices[]
+    {
+      requiredQueueFamilyIndices_.graphicsQueueFamilyIndex.value(),
+      requiredQueueFamilyIndices_.transfertQueueFamilyIndex.value()
+    };
+
+    if( requiredQueueFamilyIndices_.graphicsQueueFamilyIndex != requiredQueueFamilyIndices_.transfertQueueFamilyIndex )
+    {
+      imageInfo.sharingMode = VK_SHARING_MODE_CONCURRENT;
+      imageInfo.queueFamilyIndexCount = 2;
+      imageInfo.pQueueFamilyIndices = queueFamilyIndices;
+    }
+
+    if( vkCreateImage( logicalDevice_, &imageInfo, nullptr, &image ) != VK_SUCCESS )
+      throw std::runtime_error{ "Error failed to create image!" };
+
+    VkMemoryRequirements memRequirements;
+    vkGetImageMemoryRequirements( logicalDevice_, image, &memRequirements );
+
+    VkMemoryAllocateInfo allocInfo
+    {
+      .sType{ VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO },
+      .allocationSize{ memRequirements.size },
+      .memoryTypeIndex{ findMemoryType( memRequirements.memoryTypeBits, memoryProperties ) }
+    };
+
+    if( vkAllocateMemory( logicalDevice_, &allocInfo, nullptr, &imageMemory ) != VK_SUCCESS )
+      throw std::runtime_error{ "Error failed to allocate image memory!" };
+
+    vkBindImageMemory( logicalDevice_, image, imageMemory, 0 );
+  }
+
+  void createTextureImage()
+  {
+    auto [texturePixels, width, height, imageSize] = getTexturePixels();
+
+    VkBuffer stagingBuffer;
+    VkDeviceMemory stagingBufferMemory;
+    createBuffer( imageSize,
+                  VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                  VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+                  stagingBuffer,
+                  stagingBufferMemory );
+
+    void *data;
+    vkMapMemory( logicalDevice_, stagingBufferMemory, 0, imageSize, 0, &data );
+    memcpy( data, texturePixels, imageSize );
+    vkUnmapMemory( logicalDevice_, stagingBufferMemory );
+
+    stbi_image_free( texturePixels );
+
+    createImage( width,
+                 height,
+                 VK_FORMAT_R8G8B8A8_SRGB,
+                 VK_IMAGE_TILING_OPTIMAL,
+                 VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                 textureImage_, textureImageMemory_ );
+
+    transitionImageLayout( textureImage_, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL );
+    copyBufferToImage( stagingBuffer, textureImage_, static_cast< std::uint32_t >( width ), static_cast< std::uint32_t >( height ) );
+    transitionImageLayout( textureImage_, VK_FORMAT_R8G8B8A8_SRGB, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL );
+
+    vkDestroyBuffer( logicalDevice_, stagingBuffer, nullptr );
+    vkFreeMemory( logicalDevice_, stagingBufferMemory, nullptr );
+  }
+
   void initVulkan()
   {
     checkValidationSupport();
@@ -202,6 +320,7 @@ private:
     createGraphicPipeline();
     createFramebuffers();
     createCommandPools();
+    createTextureImage();
     createVertexBuffer();
     createIndexBuffer();
     createUniformBuffers();
@@ -211,6 +330,7 @@ private:
     createSynchronizationObjects();
   }
 
+  // todo queried too much - memoize this
   std::uint32_t findMemoryType( std::uint32_t typeFilter, VkMemoryPropertyFlags properties )
   {
     VkPhysicalDeviceMemoryProperties memoryProperties;
@@ -243,18 +363,19 @@ private:
 
   void createBuffer( VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags properties, VkBuffer &buffer, VkDeviceMemory &bufferMemory )
   {
-    std::uint32_t queueFamilyIndices[]
-    {
-      requiredQueueFamilyIndices_.graphicsQueueFamilyIndex.value(),
-      requiredQueueFamilyIndices_.transfertQueueFamilyIndex.value()
-    };
-
     VkBufferCreateInfo bufferInfo
     {
       .sType{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO },
       .size{ size },
       .usage{ usage },
       .sharingMode{ VK_SHARING_MODE_EXCLUSIVE }
+    };
+
+    // todo - robustify that by taking into account all supported queues, not only transfer and graphic
+    std::uint32_t queueFamilyIndices[]
+    {
+      requiredQueueFamilyIndices_.graphicsQueueFamilyIndex.value(),
+      requiredQueueFamilyIndices_.transfertQueueFamilyIndex.value()
     };
 
     if( requiredQueueFamilyIndices_.graphicsQueueFamilyIndex != requiredQueueFamilyIndices_.transfertQueueFamilyIndex )
@@ -265,7 +386,7 @@ private:
     }
 
     if( vkCreateBuffer( logicalDevice_, &bufferInfo, nullptr, &buffer ) != VK_SUCCESS )
-      throw std::runtime_error{ "Error failed to create vertex buffer!" };
+      throw std::runtime_error{ "Error failed to create a buffer!" };
 
     allocateAndBindBuffer( buffer, properties, bufferMemory );
   }
@@ -284,8 +405,12 @@ private:
       throw std::runtime_error{ "Error failed to allocate command buffers" };
   }
 
-  void copyBufferSync( VkCommandBuffer &commandBuffer, VkDeviceSize size, VkBuffer srcBuffer, VkBuffer dstBuffer )
+  auto beginSingleTimeCommands()
   {
+    VkCommandBuffer commandBuffer;
+
+    allocateCommandBuffers( transfertCommandPool_, 1, &commandBuffer );
+
     VkCommandBufferBeginInfo beginInfo
     {
       .sType{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO },
@@ -294,15 +419,11 @@ private:
 
     vkBeginCommandBuffer( commandBuffer, &beginInfo );
 
-    VkBufferCopy copyRegion
-    {
-      .srcOffset{ 0 }, // Optional
-      .dstOffset{ 0 }, // Optional
-      .size{ size }
-    };
+    return commandBuffer;
+  }
 
-    vkCmdCopyBuffer( commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion );
-
+  void endSingleTimeCommands( VkCommandBuffer &commandBuffer )
+  {
     vkEndCommandBuffer( commandBuffer );
 
     VkSubmitInfo submitInfo
@@ -314,15 +435,128 @@ private:
 
     vkQueueSubmit( transfertQueue_, 1, &submitInfo, VK_NULL_HANDLE );
     vkQueueWaitIdle( transfertQueue_ );
+
+    vkFreeCommandBuffers( logicalDevice_, transfertCommandPool_, 1, &commandBuffer );
+  }
+
+  void copyBufferToImage( VkBuffer buffer, VkImage image, std::uint32_t width, std::uint32_t height )
+  {
+    VkCommandBuffer commandBuffer = beginSingleTimeCommands();
+
+    VkBufferImageCopy regions[]
+    {
+      {
+        .bufferOffset{ 0 },
+        .bufferRowLength{ 0 },
+        .bufferImageHeight{ 0 },
+        .imageSubresource
+        {
+          .aspectMask{ VK_IMAGE_ASPECT_COLOR_BIT },
+          .mipLevel{ 0 },
+          .baseArrayLayer{ 0 },
+          .layerCount{ 1 },
+        },
+        .imageOffset{ 0, 0, 0 },
+        .imageExtent
+        {
+            .width{ width },
+            .height{ height },
+            .depth{ 1 }
+        }
+      }
+    };
+
+    vkCmdCopyBufferToImage( commandBuffer,
+                            buffer,
+                            image,
+                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                            1,
+                            regions
+    );
+
+    endSingleTimeCommands( commandBuffer );
+  }
+
+  constexpr std::pair< VkAccessFlags, VkAccessFlags > getPipelineStageFlagsFromTransitionLayouts( std::pair< VkImageLayout, VkImageLayout > &&transitionLayouts )
+  {
+    auto [oldLayout, newLayout] = transitionLayouts;
+
+    if( oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL )
+      return { VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT };
+
+    if( oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL )
+      return { VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT };
+
+    throw std::invalid_argument{ "Error unsupported layout transition!" };
+  }
+
+  constexpr std::pair< VkAccessFlags, VkAccessFlags > getPipelineAccessMasksFromTransitionLayouts( std::pair< VkImageLayout, VkImageLayout > &&transitionLayouts )
+  {
+    auto [oldLayout, newLayout] = transitionLayouts;
+
+    if( oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL )
+      return { 0, VK_ACCESS_TRANSFER_WRITE_BIT };
+
+    if( oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL )
+      return { VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT };
+
+    throw std::invalid_argument{ "Error unsupported layout transition!" };
+  }
+
+  void transitionImageLayout( VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout )
+  {
+    VkCommandBuffer commandBuffer = beginSingleTimeCommands();
+
+    auto [srcAccessMask, dstAccessMask] = getPipelineAccessMasksFromTransitionLayouts( { oldLayout,newLayout } );
+
+    VkImageMemoryBarrier barrier
+    {
+      .sType{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER },
+      .srcAccessMask{ srcAccessMask },
+      .dstAccessMask{ dstAccessMask },
+      .oldLayout{ oldLayout },
+      .newLayout{ newLayout },
+      .srcQueueFamilyIndex{ VK_QUEUE_FAMILY_IGNORED },
+      .dstQueueFamilyIndex{ VK_QUEUE_FAMILY_IGNORED },
+      .image{ image },
+      .subresourceRange
+      {
+        .aspectMask{ VK_IMAGE_ASPECT_COLOR_BIT },
+        .baseMipLevel{ 0 },
+        .levelCount{ 1 },
+        .baseArrayLayer{ 0 },
+        .layerCount{ 1 },
+      }
+    };
+
+    auto [srcStageFlags, dstStageFlags] = getPipelineStageFlagsFromTransitionLayouts( { oldLayout,newLayout } );
+
+    vkCmdPipelineBarrier( commandBuffer,
+                          srcStageFlags,
+                          dstStageFlags,
+                          0,
+                          0,
+                          nullptr,
+                          0,
+                          nullptr,
+                          1,
+                          &barrier );
+
+    endSingleTimeCommands( commandBuffer );
   }
 
   void copyBuffer( VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size )
   {
-    VkCommandBuffer commandBuffer;
+    auto commandBuffer = beginSingleTimeCommands();
 
-    allocateCommandBuffers( transfertCommandPool_, 1, &commandBuffer );
-    copyBufferSync( commandBuffer, size, srcBuffer, dstBuffer );
-    vkFreeCommandBuffers( logicalDevice_, transfertCommandPool_, 1, &commandBuffer );
+    VkBufferCopy copyRegion
+    {
+      .size{ size }
+    };
+
+    vkCmdCopyBuffer( commandBuffer, srcBuffer, dstBuffer, 1, &copyRegion );
+
+    endSingleTimeCommands( commandBuffer );
   }
 
   void createVertexBuffer()
@@ -1439,6 +1673,8 @@ private:
   void cleanup()
   {
     cleanupSwapChain();
+    vkDestroyImage( logicalDevice_, textureImage_, nullptr );
+    vkFreeMemory( logicalDevice_, textureImageMemory_, nullptr );
     vkDestroyDescriptorSetLayout( logicalDevice_, descriptorSetLayout_, nullptr );
     vkDestroyBuffer( logicalDevice_, indexBuffer_, nullptr );
     vkFreeMemory( logicalDevice_, indexBufferMemory_, nullptr );
@@ -1464,7 +1700,7 @@ private:
 #else
       true;
 #endif // NDEBUG
-  }
+}
 
   static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback( VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
                                                        VkDebugUtilsMessageTypeFlagsEXT messageType,
@@ -1545,7 +1781,8 @@ private:
                && transfertQueueFamilyIndex.has_value() );
     }
 
-    std::set< std::uint32_t > toSet() const noexcept
+    // todo - try to use tuples instead of sets, may require to move the definition of this type
+    std::set< std::uint32_t > toSet() const
     {
       std::set< std::uint32_t > set;
 
@@ -1586,7 +1823,7 @@ private:
       };
     }
 
-    static std::array< VkVertexInputAttributeDescription, 2 > getAttributeDescriptions()
+    static constexpr std::array< VkVertexInputAttributeDescription, 2 > getAttributeDescriptions()
     {
       return std::array< VkVertexInputAttributeDescription, 2 >
       {
@@ -1613,6 +1850,14 @@ private:
     alignas( 16 ) glm::mat4 model;
     alignas( 16 ) glm::mat4 view;
     alignas( 16 ) glm::mat4 proj;
+  };
+
+  struct TexturePixelsBuffer
+  {
+    stbi_uc *pixels;
+    int width;
+    int height;
+    std::uint64_t size;
   };
 
 private:
@@ -1656,6 +1901,8 @@ private:
   std::vector< VkDeviceMemory > uniformBuffersMemory_;
   VkDescriptorPool descriptorPool_;
   std::vector< VkDescriptorSet > descriptorSets_;
+  VkImage textureImage_;
+  VkDeviceMemory textureImageMemory_;
 
 private:
   inline static constexpr int windowWidth_{ 800 };

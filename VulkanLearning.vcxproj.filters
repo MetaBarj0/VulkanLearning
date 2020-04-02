@@ -8,6 +8,9 @@
     <Filter Include="Shaders">
       <UniqueIdentifier>{2a6764e5-0840-4c95-9e29-c1f6e9deae43}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Textures">
+      <UniqueIdentifier>{34ffa815-82d3-4853-88dc-0a652a09e440}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp">
@@ -21,5 +24,10 @@
     <None Include="shader.vert">
       <Filter>Shaders</Filter>
     </None>
+  </ItemGroup>
+  <ItemGroup>
+    <Image Include="texture.jpg">
+      <Filter>Textures</Filter>
+    </Image>
   </ItemGroup>
 </Project>

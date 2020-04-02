@@ -124,10 +124,15 @@
 rmdir /S /Q %output%
 mkdir %output%
 %AppData%\..\Local\Vulkan\1.2.131.2\Bin\glslc.exe shader.vert -o %output%vert.spv
-%AppData%\..\Local\Vulkan\1.2.131.2\Bin\glslc.exe shader.frag -o %output%frag.spv</Command>
+%AppData%\..\Local\Vulkan\1.2.131.2\Bin\glslc.exe shader.frag -o %output%frag.spv
+
+set output=$(OutputPath)textures\
+rmdir /S /Q %output%
+mkdir %output%
+copy texture.jpg %output%texture.jpg</Command>
     </PostBuildEvent>
     <PostBuildEvent>
-      <Message>Shader compilation</Message>
+      <Message>Shader compilation and textures copying</Message>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
@@ -177,10 +182,15 @@ mkdir %output%
 rmdir /S /Q %output%
 mkdir %output%
 %AppData%\..\Local\Vulkan\1.2.131.2\Bin\glslc.exe shader.vert -o %output%vert.spv
-%AppData%\..\Local\Vulkan\1.2.131.2\Bin\glslc.exe shader.frag -o %output%frag.spv</Command>
+%AppData%\..\Local\Vulkan\1.2.131.2\Bin\glslc.exe shader.frag -o %output%frag.spv
+
+set output=$(OutputPath)textures\
+rmdir /S /Q %output%
+mkdir %output%
+copy texture.jpg %output%texture.jpg</Command>
     </PostBuildEvent>
     <PostBuildEvent>
-      <Message>Shader compilation</Message>
+      <Message>Shader compilation and textures copying</Message>
     </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
@@ -189,6 +199,9 @@ mkdir %output%
   <ItemGroup>
     <None Include="shader.frag" />
     <None Include="shader.vert" />
+  </ItemGroup>
+  <ItemGroup>
+    <Image Include="texture.jpg" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
