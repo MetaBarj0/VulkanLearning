@@ -93,19 +93,28 @@ private:
 
   void createDescriptorSetLayout()
   {
-    VkDescriptorSetLayoutBinding uboLayoutBinding
+    VkDescriptorSetLayoutBinding bindings[]
     {
-      .binding{ 0 },
-      .descriptorType{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER },
-      .descriptorCount{ 1 },
-      .stageFlags{ VK_SHADER_STAGE_VERTEX_BIT }
+      {
+        .binding{ 0 },
+        .descriptorType{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER },
+        .descriptorCount{ 1 },
+        .stageFlags{ VK_SHADER_STAGE_VERTEX_BIT }
+      },
+      {
+        .binding{ 1 },
+        .descriptorType{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER },
+        .descriptorCount{ 1 },
+        .stageFlags{ VK_SHADER_STAGE_FRAGMENT_BIT },
+        .pImmutableSamplers{ nullptr }
+      }
     };
 
     VkDescriptorSetLayoutCreateInfo layoutInfo
     {
       .sType{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO },
-      .bindingCount{ 1 },
-      .pBindings{ &uboLayoutBinding }
+      .bindingCount{ sizeof( bindings ) / sizeof( VkDescriptorSetLayoutBinding ) },
+      .pBindings{ bindings }
     };
 
     if( vkCreateDescriptorSetLayout( logicalDevice_, &layoutInfo, nullptr, &descriptorSetLayout_ ) != VK_SUCCESS )
@@ -129,51 +138,57 @@ private:
 
   void createDescriptorPool()
   {
-    VkDescriptorPoolSize poolSize
+    VkDescriptorPoolSize poolSizes[]
     {
-      .type{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER },
-      .descriptorCount{ static_cast< std::uint32_t >( swapChainImages_.size() ) }
+      {
+        .type{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER },
+        .descriptorCount{ static_cast< std::uint32_t >( swapChainImages_.size() ) }
+      },
+      {
+        .type{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER },
+        .descriptorCount{ static_cast< std::uint32_t >( swapChainImages_.size() ) }
+      }
     };
 
     VkDescriptorPoolCreateInfo poolInfo
     {
       .sType{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO },
       .maxSets{ static_cast< std::uint32_t >( swapChainImages_.size() ) },
-      .poolSizeCount{ 1 },
-      .pPoolSizes{ &poolSize }
+      .poolSizeCount{ sizeof( poolSizes ) / sizeof( VkDescriptorPoolSize ) },
+      .pPoolSizes{ poolSizes }
     };
 
     if( vkCreateDescriptorPool( logicalDevice_, &poolInfo, nullptr, &descriptorPool_ ) != VK_SUCCESS )
       throw std::runtime_error{ "Error failed to create descriptor pool!" };
   }
 
-  void createDescriptorSets()
+  void repeatUpdateDescriptorSet( const std::size_t layoutCount )
   {
-    std::vector< VkDescriptorSetLayout > layouts{ swapChainImages_.size(), descriptorSetLayout_ };
-    VkDescriptorSetAllocateInfo allocInfo
+    if( layoutCount == 0 )
+      return;
+
+    const auto i = layoutCount - 1;
+
+    VkDescriptorBufferInfo buffersInfo[]
     {
-      .sType{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO },
-      .descriptorPool{ descriptorPool_ },
-      .descriptorSetCount{ static_cast< std::uint32_t >( swapChainImages_.size() ) },
-      .pSetLayouts{ layouts.data() }
+      {
+        .buffer{ uniformBuffers_[ i ] },
+        .offset{ 0 },
+        .range{ sizeof( UniformBufferObject ) }
+      }
     };
 
-    descriptorSets_.resize( swapChainImages_.size() );
-    if( vkAllocateDescriptorSets( logicalDevice_, &allocInfo, descriptorSets_.data() ) != VK_SUCCESS )
-      throw std::runtime_error{ "Error failed to allocate descriptor sets!" };
-
-    for( std::size_t i = 0; i < swapChainImages_.size(); i++ )
+    VkDescriptorImageInfo imagesInfo[]
     {
-      VkDescriptorBufferInfo buffersInfo[]
       {
-        {
-          .buffer{ uniformBuffers_[ i ] },
-          .offset{ 0 },
-          .range{ sizeof( UniformBufferObject ) }
-        }
-      };
+        .sampler{ textureSampler_ },
+        .imageView{ textureImageView_ },
+        .imageLayout{ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL }
+      }
+    };
 
-      VkWriteDescriptorSet descriptorWrite
+    VkWriteDescriptorSet descriptorWrites[]
+    {
       {
         .sType{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET },
         .dstSet{ descriptorSets_[ i ] },
@@ -182,10 +197,41 @@ private:
         .descriptorCount{ static_cast< std::uint32_t >( sizeof( buffersInfo ) / sizeof( VkDescriptorBufferInfo ) ) },
         .descriptorType{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER },
         .pBufferInfo{ buffersInfo }
-      };
+      },
+      {
+        .sType{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET },
+        .dstSet{ descriptorSets_[ i ] },
+        .dstBinding{ 1 },
+        .dstArrayElement{ 0 },
+        .descriptorCount{ static_cast< std::uint32_t >( sizeof( imagesInfo ) / sizeof( VkDescriptorImageInfo ) ) },
+        .descriptorType{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER },
+        .pImageInfo{ imagesInfo }
+      }
+    };
 
-      vkUpdateDescriptorSets( logicalDevice_, descriptorWrite.descriptorCount, &descriptorWrite, 0, nullptr );
-    }
+    vkUpdateDescriptorSets( logicalDevice_, sizeof( descriptorWrites ) / sizeof( VkWriteDescriptorSet ), descriptorWrites, 0, nullptr );
+
+    repeatUpdateDescriptorSet( layoutCount - 1 );
+  }
+
+  void createDescriptorSets()
+  {
+    const auto layoutCount = swapChainImages_.size();
+
+    std::vector< VkDescriptorSetLayout > layouts{ layoutCount, descriptorSetLayout_ };
+    VkDescriptorSetAllocateInfo allocInfo
+    {
+      .sType{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO },
+      .descriptorPool{ descriptorPool_ },
+      .descriptorSetCount{ static_cast< std::uint32_t >( layoutCount ) },
+      .pSetLayouts{ layouts.data() }
+    };
+
+    descriptorSets_.resize( layoutCount );
+    if( vkAllocateDescriptorSets( logicalDevice_, &allocInfo, descriptorSets_.data() ) != VK_SUCCESS )
+      throw std::runtime_error{ "Error failed to allocate descriptor sets!" };
+
+    repeatUpdateDescriptorSet( layoutCount );
   }
 
   auto getTexturePixels()
@@ -1873,8 +1919,9 @@ private:
 
   struct Vertex
   {
-    glm::vec2 position;
     glm::vec3 color;
+    glm::vec2 position;
+    glm::vec2 texturePosition;
 
     static VkVertexInputBindingDescription getBindingDescription()
     {
@@ -1886,9 +1933,9 @@ private:
       };
     }
 
-    static constexpr std::array< VkVertexInputAttributeDescription, 2 > getAttributeDescriptions()
+    static constexpr std::array< VkVertexInputAttributeDescription, 3 > getAttributeDescriptions()
     {
-      return std::array< VkVertexInputAttributeDescription, 2 >
+      return std::array< VkVertexInputAttributeDescription, 3 >
       {
         {
           {
@@ -1902,6 +1949,12 @@ private:
             .binding{ 0 },
             .format{ VK_FORMAT_R32G32B32_SFLOAT },
             .offset{ offsetof( Vertex, color ) }
+          },
+          {
+            .location{ 2 },
+            .binding{ 0 },
+            .format{ VK_FORMAT_R32G32B32_SFLOAT },
+            .offset{ offsetof( Vertex, texturePosition ) }
           }
         }
       };
@@ -1997,10 +2050,10 @@ private:
 
   inline static const std::vector< Vertex > vertices_
   {
-    { { -0.5f, -0.5f}, { 1.0f, 0.0f, 0.0f} },
-    { { 0.5f, -0.5f}, { 0.0f, 1.0f, 0.0f} },
-    { { 0.5f, 0.5f}, { 0.0f, 0.0f, 1.0f} },
-    { { -0.5f, 0.5f}, { 1.0f, 1.0f, 1.0f} }
+    { { 0, 1, 1 }, { -.5f, -.5f }, { 1, 0 } },
+    { { 1, 0, 1 }, { 0.5f, -.5f }, { 0, 0 } },
+    { { 1, 1, 0 }, { 0.5f, 0.5f }, { 0, 1 } },
+    { { 0, 0, 0 }, { -.5f, 0.5f }, { 1, 1 } }
   };
 
   inline static const std::vector< std::uint16_t > indices_{ 0, 1, 2, 2, 3, 0 };
