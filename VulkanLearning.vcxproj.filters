@@ -24,6 +24,7 @@
     <None Include="shader.vert">
       <Filter>Shaders</Filter>
     </None>
+    <None Include="cpp.hint" />
   </ItemGroup>
   <ItemGroup>
     <Image Include="texture.jpg">

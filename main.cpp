@@ -305,6 +305,37 @@ private:
     vkFreeMemory( logicalDevice_, stagingBufferMemory, nullptr );
   }
 
+  void createTextureImageView()
+  {
+    createImageView( textureImage_, &textureImageView_, VK_FORMAT_R8G8B8A8_SRGB );
+  }
+
+  void createTextureSampler()
+  {
+    VkSamplerCreateInfo samplerInfo
+    {
+      .sType{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO },
+      .magFilter{ VK_FILTER_LINEAR },
+      .minFilter{ VK_FILTER_LINEAR },
+      .mipmapMode{ VK_SAMPLER_MIPMAP_MODE_LINEAR },
+      .addressModeU{ VK_SAMPLER_ADDRESS_MODE_REPEAT },
+      .addressModeV{ VK_SAMPLER_ADDRESS_MODE_REPEAT },
+      .addressModeW{ VK_SAMPLER_ADDRESS_MODE_REPEAT },
+      .mipLodBias{ 0 },
+      .anisotropyEnable{ VK_TRUE },
+      .maxAnisotropy{ 16 },
+      .compareEnable{ VK_FALSE },
+      .compareOp{ VK_COMPARE_OP_ALWAYS },
+      .minLod{ 0 },
+      .maxLod{ 0 },
+      .borderColor{ VK_BORDER_COLOR_INT_OPAQUE_BLACK },
+      .unnormalizedCoordinates{ VK_FALSE }
+    };
+
+    if( vkCreateSampler( logicalDevice_, &samplerInfo, nullptr, &textureSampler_ ) != VK_SUCCESS )
+      throw std::runtime_error{ "Error failed to create texture sampler!" };
+  }
+
   void initVulkan()
   {
     checkValidationSupport();
@@ -321,6 +352,8 @@ private:
     createFramebuffers();
     createCommandPools();
     createTextureImage();
+    createTextureImageView();
+    createTextureSampler();
     createVertexBuffer();
     createIndexBuffer();
     createUniformBuffers();
@@ -1016,14 +1049,14 @@ private:
     return shaderModule;
   }
 
-  void createImageView( VkImage image, VkImageView *targetImageView )
+  void createImageView( VkImage image, VkImageView *targetImageView, VkFormat format )
   {
     VkImageViewCreateInfo createInfo
     {
       .sType{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO },
       .image{ image },
       .viewType{ VK_IMAGE_VIEW_TYPE_2D },
-      .format{ swapChainSurfaceFormat_.format },
+      .format{ format },
       .components
       {
         .r{ VK_COMPONENT_SWIZZLE_IDENTITY },
@@ -1050,7 +1083,7 @@ private:
     swapChainImageViews_.resize( swapChainImages_.size() );
 
     for( std::size_t i = 0; i < swapChainImages_.size(); ++i )
-      createImageView( swapChainImages_[ i ], &swapChainImageViews_[ i ] );
+      createImageView( swapChainImages_[ i ], &swapChainImageViews_[ i ], swapChainSurfaceFormat_.format );
   }
 
   void setupSwapChainImageSharingMode( VkSwapchainCreateInfoKHR &createInfo )
@@ -1191,8 +1224,6 @@ private:
   {
     auto allQueueCreateInfo = getAllDeviceQueueCreateInfo();
 
-    VkPhysicalDeviceFeatures deviceFeatures{};
-
     VkDeviceCreateInfo deviceCreateInfo
     {
       .sType{ VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO },
@@ -1201,7 +1232,7 @@ private:
       .enabledLayerCount{ 0 },
       .enabledExtensionCount{ static_cast< std::uint32_t >( vulkanProductionExtensions_.size() ) },
       .ppEnabledExtensionNames{ vulkanProductionExtensions_.data() },
-      .pEnabledFeatures{ &deviceFeatures }
+      .pEnabledFeatures{ &requiredPhysicalDeviceFeatures_ }
     };
 
     if( IsVulkanValidationEnabled() )
@@ -1240,14 +1271,44 @@ private:
       throw std::runtime_error{ "Error failed to find a suitable GPU!" };
   }
 
+  bool isDeviceSupportingRequiredFeatures( VkPhysicalDevice device )
+  {
+    VkPhysicalDeviceFeatures actualFeatures;
+    vkGetPhysicalDeviceFeatures( device, &actualFeatures );
+
+    auto packedRequiredFeatures = &reinterpret_cast< char const volatile & >( requiredPhysicalDeviceFeatures_ );
+    auto packedActualFeatures = &reinterpret_cast< char const volatile & >( actualFeatures );
+
+    for( auto &&offset : requiredPhysicalDeviceFeatureOffsets_ )
+    {
+      auto required = *( packedRequiredFeatures + offset );
+      auto actual = *( packedActualFeatures + offset );
+
+      if( required && !actual )
+        return false;
+    }
+
+    return true;
+  }
+
+  void setupRequiredFeaturesForPhysicalDevice( VkPhysicalDevice device )
+  {
+    auto packedFeatures = &reinterpret_cast< char volatile & >( requiredPhysicalDeviceFeatures_ );
+
+    for( auto &&offset : requiredPhysicalDeviceFeatureOffsets_ )
+      *( packedFeatures + offset ) = VkBool32{ VK_TRUE };
+  }
+
   bool isPhysicalDeviceSuitable( VkPhysicalDevice device )
   {
     setupRequiredQueueFamiliesForPhysicalDevice( device );
     setupSwapChainSupportForPhysicalDevice( device );
+    setupRequiredFeaturesForPhysicalDevice( device );
 
     return ( requiredQueueFamilyIndices_.isComplete()
              && isDeviceSupportingRequiredExtensions( device )
-             && swapChainSupportDetails_.isComplete() );
+             && swapChainSupportDetails_.isComplete()
+             && isDeviceSupportingRequiredFeatures( device ) );
   }
 
   void setupSwapChainSupportForPhysicalDevice( VkPhysicalDevice device )
@@ -1673,6 +1734,8 @@ private:
   void cleanup()
   {
     cleanupSwapChain();
+    vkDestroySampler( logicalDevice_, textureSampler_, nullptr );
+    vkDestroyImageView( logicalDevice_, textureImageView_, nullptr );
     vkDestroyImage( logicalDevice_, textureImage_, nullptr );
     vkFreeMemory( logicalDevice_, textureImageMemory_, nullptr );
     vkDestroyDescriptorSetLayout( logicalDevice_, descriptorSetLayout_, nullptr );
@@ -1700,7 +1763,7 @@ private:
 #else
       true;
 #endif // NDEBUG
-}
+  }
 
   static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback( VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
                                                        VkDebugUtilsMessageTypeFlagsEXT messageType,
@@ -1866,6 +1929,7 @@ private:
   VkInstance vulkanInstance_{};
   VkDebugUtilsMessengerEXT debugMessenger_{};
   VkSurfaceKHR surface_{};
+  VkPhysicalDeviceFeatures requiredPhysicalDeviceFeatures_{};
   VkPhysicalDevice physicalDevice_{};
   VkDevice logicalDevice_{};
   RequiredQueueFamilyIndices requiredQueueFamilyIndices_{};
@@ -1903,10 +1967,17 @@ private:
   std::vector< VkDescriptorSet > descriptorSets_;
   VkImage textureImage_;
   VkDeviceMemory textureImageMemory_;
+  VkImageView textureImageView_;
+  VkSampler textureSampler_;
 
 private:
   inline static constexpr int windowWidth_{ 800 };
   inline static constexpr int windowHeight_{ 600 };
+
+  inline static constexpr std::size_t requiredPhysicalDeviceFeatureOffsets_[]
+  {
+    offsetof( VkPhysicalDeviceFeatures, samplerAnisotropy )
+  };
 
   inline static const std::vector< const char * > vulkanValidationLayers_
   {
@@ -1932,7 +2003,7 @@ private:
     { { -0.5f, 0.5f}, { 1.0f, 1.0f, 1.0f} }
   };
 
-  inline static const std::vector< std::uint16_t > indices_{ 0,1,2,2,3,0 };
+  inline static const std::vector< std::uint16_t > indices_{ 0, 1, 2, 2, 3, 0 };
 };
 
 int main( int argc, char *argv[] )

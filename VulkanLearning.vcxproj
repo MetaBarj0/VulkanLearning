@@ -197,6 +197,7 @@ copy texture.jpg %output%texture.jpg</Command>
     <ClCompile Include="main.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <None Include="cpp.hint" />
     <None Include="shader.frag" />
     <None Include="shader.vert" />
   </ItemGroup>
