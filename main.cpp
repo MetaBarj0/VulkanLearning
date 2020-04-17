@@ -4,11 +4,16 @@
 
 #define GLM_FORCE_RADIANS
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
+#define GLM_ENABLE_EXPERIMENTAL
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtx/hash.hpp>
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "thirdparty/stb/stb_image.h"
+
+#define TINYOBJLOADER_IMPLEMENTATION
+#include "thirdparty/tinyobjloader/tiny_obj_loader.h"
 
 #include <iostream>
 #include <stdexcept>
@@ -25,6 +30,82 @@
 #include <array>
 #include <cstring>
 #include <chrono>
+#include <unordered_map>
+
+struct Vertex
+{
+  glm::vec3 color;
+  glm::vec3 position;
+  glm::vec2 texturePosition;
+
+  bool operator ==( const Vertex &other ) const noexcept
+  {
+    return color == other.color && position == other.position && texturePosition == other.texturePosition;
+  }
+
+  std::size_t getHash() const noexcept
+  {
+    const auto positionHash = std::hash< glm::vec3 >()( position );
+    const auto colorHash = std::hash< glm::vec3 >()( color );
+    const auto texturePositionHash = std::hash< glm::vec2 >()( texturePosition );
+
+    const auto firstHashSet = positionHash ^ ( colorHash << 1 );
+    const auto secondHashSet = texturePositionHash;
+
+    return  firstHashSet ^ ( secondHashSet << 1 );
+  }
+
+  static VkVertexInputBindingDescription getBindingDescription()
+  {
+    return VkVertexInputBindingDescription
+    {
+      .binding{ 0 },
+      .stride{ sizeof( Vertex ) },
+      .inputRate{ VK_VERTEX_INPUT_RATE_VERTEX }
+    };
+  }
+
+  static constexpr std::array< VkVertexInputAttributeDescription, 3 > getAttributeDescriptions()
+  {
+    return std::array< VkVertexInputAttributeDescription, 3 >
+    {
+      {
+        {
+          .location{ 0 },
+            .binding{ 0 },
+            .format{ VK_FORMAT_R32G32B32_SFLOAT },
+            .offset{ offsetof( Vertex, position ) },
+        },
+          {
+            .location{ 1 },
+            .binding{ 0 },
+            .format{ VK_FORMAT_R32G32B32_SFLOAT },
+            .offset{ offsetof( Vertex, color ) }
+          },
+          {
+            .location{ 2 },
+            .binding{ 0 },
+            .format{ VK_FORMAT_R32G32_SFLOAT },
+            .offset{ offsetof( Vertex, texturePosition ) }
+          }
+      }
+    };
+  }
+};
+
+namespace std
+{
+
+template<>
+struct hash< Vertex >
+{
+  std::size_t operator()( const Vertex &vertex ) const noexcept
+  {
+    return vertex.getHash();
+  }
+};
+
+}
 
 class VulkanApplication
 {
@@ -237,11 +318,11 @@ private:
 
   auto getTexturePixels()
   {
-    auto texture = applicationPath_.parent_path() / "textures" / "texture.jpg";
+    auto texture = applicationPath_.parent_path() / textureRelativePath_;
 
     int width, height, texChannels;
     stbi_uc *pixels = stbi_load( texture.string().c_str(), &width, &height, &texChannels, STBI_rgb_alpha );
-    VkDeviceSize size = static_cast< std::uint64_t >( width * height * 4ull );
+    VkDeviceSize size = static_cast< VkDeviceSize >( width ) * height * 4;
 
     if( !pixels )
       throw std::runtime_error{ "Error failed to load texture image!" };
@@ -429,6 +510,56 @@ private:
     transitionImageLayout( depthImage_, depthFormat, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL );
   }
 
+  void loadShape( const tinyobj::shape_t &shape, const tinyobj::attrib_t &attrib )
+  {
+    std::unordered_map< Vertex, std::uint32_t > uniqueVertices;
+
+    for( const auto &index : shape.mesh.indices )
+    {
+      const std::size_t vertexPositionBase = std::size_t{ 3 } *index.vertex_index;
+      const std::size_t textureCoordinateBase = std::size_t{ 2 }  *index.texcoord_index;
+
+      const Vertex vertex
+      {
+        .color{ 1, 1, 1 },
+        .position
+        {
+          attrib.vertices[ vertexPositionBase + 0 ],
+          attrib.vertices[ vertexPositionBase + 1 ],
+          attrib.vertices[ vertexPositionBase + 2 ]
+        },
+        .texturePosition
+        {
+          attrib.texcoords[ textureCoordinateBase + 0 ],
+          1 - attrib.texcoords[ textureCoordinateBase + 1 ] // vulkan top-bottom coord
+        }
+      };
+
+      if( uniqueVertices.count( vertex ) == 0 )
+      {
+        uniqueVertices.emplace( vertex, vertices_.size() );
+        vertices_.emplace_back( vertex );
+      }
+
+      indices_.push_back( uniqueVertices[ vertex ] );
+    }
+  }
+
+  void loadModel()
+  {
+    tinyobj::attrib_t attrib;
+    std::vector< tinyobj::shape_t > shapes;
+    std::vector< tinyobj::material_t > materials;
+    std::string warn, err;
+    auto objPath = applicationPath_.parent_path() / objRelativePath_;
+
+    if( !tinyobj::LoadObj( &attrib, &shapes, &materials, &warn, &err, objPath.string().c_str() ) )
+      throw std::runtime_error{ "Error when loading obj file: " + warn + err };
+
+    for( const auto &shape : shapes )
+      loadShape( shape, attrib );
+  }
+
   void initVulkan()
   {
     checkValidationSupport();
@@ -448,6 +579,7 @@ private:
     createTextureImage();
     createTextureImageView();
     createTextureSampler();
+    loadModel();
     createVertexBuffer();
     createIndexBuffer();
     createUniformBuffers();
@@ -810,7 +942,7 @@ private:
     VkBuffer vertexBuffers[] = { vertexBuffer_ };
     VkDeviceSize offsets[] = { 0 };
     vkCmdBindVertexBuffers( targetCommandBuffer, 0, 1, vertexBuffers, offsets );
-    vkCmdBindIndexBuffer( targetCommandBuffer, indexBuffer_, 0, VK_INDEX_TYPE_UINT16 );
+    vkCmdBindIndexBuffer( targetCommandBuffer, indexBuffer_, 0, VK_INDEX_TYPE_UINT32 );
     vkCmdBindDescriptorSets( targetCommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout_, 0, 1, targetDescriptorSet, 0, nullptr );
 
     vkCmdDrawIndexed( targetCommandBuffer, static_cast< uint32_t >( indices_.size() ), 1, 0, 0, 0 );
@@ -1782,7 +1914,7 @@ private:
       .model
       {
           glm::rotate( glm::mat4( 1.0f ),
-                       delta * glm::radians( 90.0f ),
+                       delta * glm::radians( 9.0f ),
                        glm::vec3( 0.0f, 0.0f, 1.0f ) )
       },
       .view
@@ -1793,14 +1925,14 @@ private:
       },
       .proj
       {
-        glm::perspective( glm::radians( 30.0f ),
+        glm::perspective( glm::radians( 45.0f ),
                           swapChainExtent_.width / static_cast< float >( swapChainExtent_.height ),
                           0.1f,
                           9.9f )
       }
     };
 
-    ubo.proj[ 1 ][ 1 ] *= -1;
+    ubo.proj[ 1 ][ 1 ] *= -1; // vulkan top-bottom coord
 
     void *data;
     vkMapMemory( logicalDevice_, uniformBuffersMemory_[ imageIndex ], 0, sizeof( UniformBufferObject ), 0, &data );
@@ -2007,50 +2139,6 @@ private:
     }
   };
 
-  struct Vertex
-  {
-    glm::vec3 color;
-    glm::vec3 position;
-    glm::vec2 texturePosition;
-
-    static VkVertexInputBindingDescription getBindingDescription()
-    {
-      return VkVertexInputBindingDescription
-      {
-        .binding{ 0 },
-        .stride{ sizeof( Vertex ) },
-        .inputRate{ VK_VERTEX_INPUT_RATE_VERTEX }
-      };
-    }
-
-    static constexpr std::array< VkVertexInputAttributeDescription, 3 > getAttributeDescriptions()
-    {
-      return std::array< VkVertexInputAttributeDescription, 3 >
-      {
-        {
-          {
-            .location{ 0 },
-              .binding{ 0 },
-              .format{ VK_FORMAT_R32G32B32_SFLOAT },
-              .offset{ offsetof( Vertex, position ) },
-          },
-          {
-            .location{ 1 },
-            .binding{ 0 },
-            .format{ VK_FORMAT_R32G32B32_SFLOAT },
-            .offset{ offsetof( Vertex, color ) }
-          },
-          {
-            .location{ 2 },
-            .binding{ 0 },
-            .format{ VK_FORMAT_R32G32_SFLOAT },
-            .offset{ offsetof( Vertex, texturePosition ) }
-          }
-        }
-      };
-    }
-  };
-
   struct UniformBufferObject
   {
     alignas( 16 ) glm::mat4 model;
@@ -2100,6 +2188,8 @@ private:
   std::vector< VkFence > inFlightImageFences_;
   std::uint8_t maxFrameInFlight_{ 0 };
   bool framebufferResized_{ false };
+  std::vector< Vertex > vertices_;
+  std::vector< std::uint32_t > indices_;
   VkBuffer vertexBuffer_;
   VkDeviceMemory vertexBufferMemory_{};
   VkBuffer indexBuffer_;
@@ -2141,25 +2231,9 @@ private:
     VK_KHR_SWAPCHAIN_EXTENSION_NAME
   };
 
-  inline static const std::vector< Vertex > vertices_
-  {
-    { { 0, 1, 1 }, { -.5f, -.5f, 0 }, { 1, 0 } },
-    { { 1, 0, 1 }, { 0.5f, -.5f, 0 }, { 0, 0 } },
-    { { 1, 1, 0 }, { 0.5f, 0.5f, 0 }, { 0, 1 } },
-    { { 0, 0, 0 }, { -.5f, 0.5f, 0 }, { 1, 1 } },
-
-    { { 0, 1, 1 }, { -.5f, -.5f, -.5f }, { 1, 0 } },
-    { { 1, 0, 1 }, { 0.5f, -.5f, -.5f }, { 0, 0 } },
-    { { 1, 1, 0 }, { 0.5f, 0.5f, -.5f }, { 0, 1 } },
-    { { 0, 0, 0 }, { -.5f, 0.5f, -.5f }, { 1, 1 } }
-  };
-
-  inline static const std::vector< std::uint16_t > indices_
-  {
-    0, 1, 2, 2, 3, 0,
-    4, 5, 6, 6, 7, 4
-  };
-  };
+  inline static const std::filesystem::path textureRelativePath_{ "textures/chalet.jpg" };
+  inline static const std::filesystem::path objRelativePath_{ "models/chalet.obj" };
+};
 
 int main( int argc, char *argv[] )
 {

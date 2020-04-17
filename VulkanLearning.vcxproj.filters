@@ -11,6 +11,9 @@
     <Filter Include="Textures">
       <UniqueIdentifier>{34ffa815-82d3-4853-88dc-0a652a09e440}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Models">
+      <UniqueIdentifier>{f4eea81e-6df8-4eef-983d-62510f2b234f}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.cpp">
@@ -25,9 +28,15 @@
       <Filter>Shaders</Filter>
     </None>
     <None Include="cpp.hint" />
+    <None Include="chalet.obj">
+      <Filter>Models</Filter>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <Image Include="texture.jpg">
+      <Filter>Textures</Filter>
+    </Image>
+    <Image Include="chalet.jpg">
       <Filter>Textures</Filter>
     </Image>
   </ItemGroup>

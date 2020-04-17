@@ -129,7 +129,12 @@ mkdir %output%
 set output=$(OutputPath)textures\
 rmdir /S /Q %output%
 mkdir %output%
-copy texture.jpg %output%texture.jpg</Command>
+copy chalet.jpg %output%chalet.jpg
+
+set output=$(OutputPath)models\
+rmdir /S /Q %output%
+mkdir %output%
+copy chalet.obj %output%chalet.obj</Command>
     </PostBuildEvent>
     <PostBuildEvent>
       <Message>Shader compilation and textures copying</Message>
@@ -187,7 +192,12 @@ mkdir %output%
 set output=$(OutputPath)textures\
 rmdir /S /Q %output%
 mkdir %output%
-copy texture.jpg %output%texture.jpg</Command>
+copy chalet.jpg %output%chalet.jpg
+
+set output=$(OutputPath)models\
+rmdir /S /Q %output%
+mkdir %output%
+copy chalet.obj %output%chalet.obj</Command>
     </PostBuildEvent>
     <PostBuildEvent>
       <Message>Shader compilation and textures copying</Message>
@@ -202,7 +212,17 @@ copy texture.jpg %output%texture.jpg</Command>
     <None Include="shader.vert" />
   </ItemGroup>
   <ItemGroup>
+    <Image Include="chalet.jpg" />
     <Image Include="texture.jpg" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="chalet.obj">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+      </ExcludedFromBuild>
+      <FileType>Document</FileType>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+      </ExcludedFromBuild>
+    </None>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
